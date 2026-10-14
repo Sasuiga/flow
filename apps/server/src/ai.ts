@@ -42,3 +42,20 @@ export async function probeOCR(base: string, extraHeader?: string): Promise<Prob
     return { ok: false, detail: `连接失败：${(e as Error).message}` };
   }
 }
+
+/** 拉取 LLM 可用模型列表：GET {base}/models */
+export async function fetchLLMModels(base: string, extraHeader?: string): Promise<ProbeResult & { models: string[] }> {
+  try {
+    const res = await fetch(strip(base) + '/models', {
+      headers: parseExtraHeader(extraHeader ?? ''),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return { ok: false, models: [], detail: `HTTP ${res.status}（${strip(base)}/models）` };
+    const data = (await res.json()) as { data?: { id: string }[] };
+    const models = (data.data ?? []).map((m) => m.id);
+    if (models.length === 0) return { ok: true, models, detail: '端点可达，但未返回模型列表' };
+    return { ok: true, models, detail: `共 ${models.length} 个模型` };
+  } catch (e) {
+    return { ok: false, models: [], detail: `连接失败：${(e as Error).message}` };
+  }
+}

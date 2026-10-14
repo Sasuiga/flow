@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Form,
@@ -8,130 +9,333 @@ import {
   InputNumber,
   Space,
   Spin,
+  Tabs,
   Typography,
   message,
 } from 'antd';
-import { ApiOutlined, SaveOutlined } from '@ant-design/icons';
-import { ProbeResult, Settings } from '@flow/shared';
-import { api } from '../api';
+import {
+  ApiOutlined,
+  CloudOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+  KeyOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+  ScanOutlined,
+} from '@ant-design/icons';
+import { Settings as FlowSettings } from '@flow/shared';
+import { api, LlmModelsResult } from '../api';
+
+/** 内联状态条：测试结果直接显示在按钮下方，绿色=成功 / 红色=失败 */
+function StatusLine({ status }: { status: { loading?: boolean; ok?: boolean; detail?: string } | null }) {
+  if (status?.loading)
+    return (
+      <Space size={8} style={{ marginTop: 12 }}>
+        <Spin size="small" />
+        <Typography.Text type="secondary">测试中…</Typography.Text>
+      </Space>
+    );
+  if (!status || status.detail === undefined) return null;
+  if (status.ok)
+    return (
+      <Alert
+        style={{ marginTop: 12 }}
+        type="success"
+        showIcon
+        message="连接成功"
+        description={status.detail ? <span style={{ whiteSpace: 'pre-line' }}>{status.detail}</span> : undefined}
+      />
+    );
+  return (
+    <Alert
+      style={{ marginTop: 12 }}
+      type="error"
+      showIcon
+      message="连接失败"
+      description={status.detail}
+    />
+  );
+}
+
+/** 带 显示/隐藏 切换的请求头输入（仿 Avalon 的 API Key 交互） */
+function HeaderInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <Input.Group compact style={{ display: 'flex' }}>
+      <Input
+        style={{ flex: 1 }}
+        type={show ? 'text' : 'password'}
+        value={value}
+        placeholder={placeholder ?? '例如 Authorization: Bearer sk-xxx'}
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <Button type="default" onClick={() => setShow((s) => !s)} title={show ? '隐藏' : '显示'}>
+        {show ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+      </Button>
+    </Input.Group>
+  );
+}
 
 export default function SettingsPage() {
-  const [form] = Form.useForm<Settings>();
+  const [llmForm] = Form.useForm();
+  const [ocrForm] = Form.useForm();
   const [loading, setLoading] = useState(true);
-  const [probing, setProbing] = useState(false);
-  const [probeResult, setProbeResult] = useState<{ llm: ProbeResult; ocr: ProbeResult } | null>(null);
+
+  const [llmStatus, setLlmStatus] = useState<{ loading?: boolean; ok?: boolean; detail?: string } | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<{ loading?: boolean; ok?: boolean; detail?: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const [modelOptions, setModelOptions] = useState<{ value: string }[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   useEffect(() => {
     api
       .getSettings()
       .then((s) => {
-        form.setFieldsValue(s);
+        llmForm.setFieldsValue({
+          llmBase: s.llmBase,
+          llmModel: s.llmModel,
+          llmExtraHeader: s.llmExtraHeader,
+          llmConcurrency: s.llmConcurrency,
+        });
+        ocrForm.setFieldsValue({ ocrBase: s.ocrBase, ocrExtraHeader: s.ocrExtraHeader });
         setLoading(false);
       })
       .catch((e) => {
         message.error((e as Error).message);
         setLoading(false);
       });
-  }, [form]);
+  }, [llmForm, ocrForm]);
 
-  const save = async () => {
+  /** 拉取端点上的可用模型，填进模型名下拉 */
+  const fetchModels = async (useValues: boolean) => {
+    const v = llmForm.getFieldsValue();
+    const body = useValues ? { llmBase: v.llmBase, llmExtraHeader: v.llmExtraHeader } : {};
+    setFetchingModels(true);
     try {
-      const s = await form.validateFields();
-      await api.putSettings(s);
-      message.success('设置已保存');
+      const r = (await api.llmModels(body)) as LlmModelsResult;
+      if (r.ok && r.models.length > 0) {
+        setModelOptions(r.models.map((m) => ({ value: m })));
+        const cur = llmForm.getFieldValue('llmModel');
+        if (!cur || !r.models.includes(cur)) {
+          llmForm.setFieldValue('llmModel', r.models[0]);
+          message.info(`已填入可用模型：${r.models[0]}`);
+        } else {
+          message.success(`获取成功，共 ${r.models.length} 个模型`);
+        }
+      } else {
+        message.warning(r.detail || '端点可达但未返回模型列表');
+      }
     } catch (e) {
-      if ((e as { errorFields?: unknown[] }).errorFields) return; // 表单校验
-      message.error((e as Error).message);
+      message.error(`获取失败：${(e as Error).message}`);
+    } finally {
+      setFetchingModels(false);
     }
   };
 
-  const probe = async () => {
-    const s = form.getFieldsValue();
-    setProbing(true);
-    setProbeResult(null);
+  const testLlm = async () => {
+    const v = llmForm.getFieldsValue();
+    if (!v.llmBase) {
+      message.warning('请先填 LLM 端点');
+      return;
+    }
+    setLlmStatus({ loading: true });
     try {
-      setProbeResult(await api.probe(s));
+      const [r, models] = await Promise.all([
+        api.probeLlm({ llmBase: v.llmBase, llmModel: v.llmModel, llmExtraHeader: v.llmExtraHeader }),
+        api.llmModels({ llmBase: v.llmBase, llmExtraHeader: v.llmExtraHeader }).catch(() => null),
+      ]);
+      if (models && models.ok && models.models.length > 0) {
+        setModelOptions(models.models.map((m) => ({ value: m })));
+        if (!v.llmModel || !models.models.includes(v.llmModel)) {
+          llmForm.setFieldValue('llmModel', models.models[0]);
+          setLlmStatus({ loading: false, ok: r.ok, detail: `端点可达。已自动填入当前可用模型：${models.models[0]}` });
+        } else {
+          setLlmStatus({ loading: false, ok: r.ok, detail: r.detail });
+        }
+      } else {
+        setLlmStatus({ loading: false, ok: r.ok, detail: r.detail });
+      }
+    } catch (e) {
+      setLlmStatus({ loading: false, ok: false, detail: (e as Error).message });
+    }
+  };
+
+  const testOcr = async () => {
+    const v = ocrForm.getFieldsValue();
+    if (!v.ocrBase) {
+      message.warning('请先填 OCR 端点');
+      return;
+    }
+    setOcrStatus({ loading: true });
+    try {
+      const r = await api.probeOcr({ ocrBase: v.ocrBase, ocrExtraHeader: v.ocrExtraHeader });
+      setOcrStatus({ loading: false, ok: r.ok, detail: r.detail });
+    } catch (e) {
+      setOcrStatus({ loading: false, ok: false, detail: (e as Error).message });
+    }
+  };
+
+  const save = async () => {
+    let llm: Record<string, unknown>;
+    let ocr: Record<string, unknown>;
+    try {
+      llm = await llmForm.validateFields();
+      ocr = await ocrForm.validateFields();
+    } catch {
+      message.warning('表单必填项未完成（红星字段）');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.putSettings({ ...llm, ...ocr } as FlowSettings);
+      message.success('设置已保存，立即生效');
     } catch (e) {
       message.error((e as Error).message);
     } finally {
-      setProbing(false);
+      setSaving(false);
     }
   };
 
   if (loading) return <Spin />;
 
-  const alert = (r: ProbeResult, title: string) => (
-    <Alert
-      key={title}
-      type={r.ok ? 'success' : 'error'}
-      showIcon
-      message={title}
-      description={r.detail}
-    />
-  );
-
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card title="AI 服务端点（按需填写，保存后生效）" size="small">
+    <Space direction="vertical" size={0} style={{ width: '100%' }}>
+      <Card size="small" style={{ borderRadius: 8 }}>
         <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 0 }}>
-          笔记本与算力舱在同一局域网时，可直连 192.168.1.17（LLM :8005 / OCR :8008）；
-          不在同一局域网时，填懒猫外网穿透地址（如 https://xxx.heiyu.space…），需要鉴权时在“自定义请求头”里填。
-          填完点「测试连接」验证，再点「保存」。
+          分别配置 LLM（大模型）与 OCR（文字识别）两个服务，「测试」通过后再保存。不在同一局域网时填外网穿透地址；
+          需要鉴权时在「自定义请求头」里填（格式：名称: 值）。
         </Typography.Paragraph>
-        <Form form={form} layout="vertical" style={{ maxWidth: 640 }}>
-          <Form.Item label="LLM 端点（vLLM，OpenAI 兼容）" name="llmBase" rules={[{ required: true }]}>
-            <Input placeholder="http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space/v1" />
-          </Form.Item>
-          <Form.Item
-            label="LLM 模型名"
-            name="llmModel"
-            rules={[{ required: true }]}
-            extra="不确定就点「测试连接」，会提示当前可用模型"
-          >
-            <Input placeholder="qwen-3.8-27b-uncensored" />
-          </Form.Item>
-          <Form.Item
-            label="LLM 自定义请求头（可选）"
-            name="llmExtraHeader"
-            extra="端点需要鉴权时填，格式：名称: 值，例如 Authorization: Bearer sk-xxx 或 X-Api-Key: abc"
-          >
-            <Input placeholder="例如 Authorization: Bearer sk-local" allowClear />
-          </Form.Item>
-          <Form.Item label="OCR 端点（PP-OCRv6）" name="ocrBase" rules={[{ required: true }]}>
-            <Input placeholder="http://192.168.1.17:8008 或 https://xxx.heiyu.space" />
-          </Form.Item>
-          <Form.Item
-            label="OCR 自定义请求头（可选）"
-            name="ocrExtraHeader"
-            extra="同 LLM，OCR 端点需要鉴权时填"
-          >
-            <Input placeholder="例如 X-Api-Key: abc" allowClear />
-          </Form.Item>
-          <Form.Item label="LLM 并发数" name="llmConcurrency" extra="同时跑的 LLM 解析任务数">
-            <InputNumber min={1} max={4} style={{ width: 120 }} />
-          </Form.Item>
-          <Space>
-            <Button icon={<SaveOutlined />} type="primary" onClick={save}>
-              保存
-            </Button>
-            <Button icon={<ApiOutlined />} onClick={probe} loading={probing}>
-              测试连接
-            </Button>
-          </Space>
-        </Form>
+        <Tabs
+          items={[
+            {
+              key: 'llm',
+              label: (
+                <span>
+                  <CloudOutlined /> LLM 模型
+                </span>
+              ),
+              children: (
+                <div style={{ maxWidth: 640 }}>
+                  <Form form={llmForm} layout="vertical">
+                    <Form.Item
+                      label="LLM 端点（vLLM，OpenAI 兼容）"
+                      name="llmBase"
+                      rules={[{ required: true, message: '请输入 LLM 端点' }]}
+                    >
+                      <Input placeholder="http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space:8005/v1" spellCheck={false} />
+                    </Form.Item>
+                    <Form.Item
+                      label="模型名"
+                      name="llmModel"
+                      rules={[{ required: true, message: '请输入模型名' }]}
+                      extra="可手动输入，或点「拉取模型列表」从端点自动获取"
+                    >
+                      <Space.Compact style={{ width: '100%' }}>
+                        <AutoComplete
+                          style={{ flex: 1 }}
+                          options={modelOptions}
+                          placeholder="qwen-3.8-27b-uncensored"
+                          allowClear
+                        />
+                        <Button
+                          loading={fetchingModels}
+                          icon={<ReloadOutlined />}
+                          onClick={() => fetchModels(true)}
+                        >
+                          拉取模型列表
+                        </Button>
+                      </Space.Compact>
+                    </Form.Item>
+                    <Form.Item
+                      label="自定义请求头（可选）"
+                      name="llmExtraHeader"
+                      extra="端点需要鉴权时填，格式：名称: 值，例如 Authorization: Bearer sk-xxx"
+                    >
+                      <HeaderInput placeholder="例如 Authorization: Bearer sk-xxx" />
+                    </Form.Item>
+                    <Form.Item label="LLM 并发数" name="llmConcurrency" extra="同时跑的 LLM 解析任务数">
+                      <InputNumber min={1} max={4} style={{ width: 120 }} />
+                    </Form.Item>
+                    <Space>
+                      <Button type="primary" icon={<ApiOutlined />} onClick={() => testLlm()}>
+                        测试 LLM
+                      </Button>
+                      <Button onClick={() => fetchModels(true)} loading={fetchingModels} icon={<KeyOutlined />}>
+                        仅拉取模型
+                      </Button>
+                    </Space>
+                  </Form>
+                  <StatusLine status={llmStatus} />
+                </div>
+              ),
+            },
+            {
+              key: 'ocr',
+              label: (
+                <span>
+                  <ScanOutlined /> OCR 服务
+                </span>
+              ),
+              children: (
+                <div style={{ maxWidth: 640 }}>
+                  <Form form={ocrForm} layout="vertical">
+                    <Form.Item
+                      label="OCR 端点（PP-OCRv6）"
+                      name="ocrBase"
+                      rules={[{ required: true, message: '请输入 OCR 端点' }]}
+                      extra="填到根地址即可，无需 /health、/ocr 等路径后缀"
+                    >
+                      <Input placeholder="http://192.168.1.17:8008 或 https://xxx.heiyu.space:18008" spellCheck={false} />
+                    </Form.Item>
+                    <Form.Item
+                      label="自定义请求头（可选）"
+                      name="ocrExtraHeader"
+                      extra="同 LLM，OCR 端点需要鉴权时填"
+                    >
+                      <HeaderInput placeholder="例如 X-Api-Key: abc" />
+                    </Form.Item>
+                    <Space>
+                      <Button type="primary" icon={<ApiOutlined />} onClick={() => testOcr()}>
+                        测试 OCR
+                      </Button>
+                    </Space>
+                  </Form>
+                  <StatusLine status={ocrStatus} />
+                </div>
+              ),
+            },
+          ]}
+        />
       </Card>
 
-      {probeResult && (
-        <Card size="small" title="连接测试结果">
-          <Space direction="vertical" size={8}>
-            {alert(probeResult.llm, 'LLM（Qwen）')}
-            {alert(probeResult.ocr, 'OCR（PP-OCRv6）')}
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              提示：模型服务可能被懒猫平台切换，若 LLM 提示模型不在列表，请按提示更新模型名后保存。
-            </Typography.Text>
-          </Space>
-        </Card>
-      )}
+      <Card size="small" style={{ borderTopLeftRadius: 0 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            提示：模型服务可能被懒猫平台切换，若 LLM 测试提示模型不在列表，请按提示里的可用模型名更新后保存。
+          </Typography.Text>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => save()}>
+            保存设置
+          </Button>
+        </div>
+      </Card>
     </Space>
   );
 }
