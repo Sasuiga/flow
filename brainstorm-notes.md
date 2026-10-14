@@ -106,3 +106,12 @@
 - **用户补充（D16）**：笔记本与算力舱**不在同一局域网** → 设置页已升级为：端点 URL 完全自填（可填 heiyu.space 外网穿透地址）+ 可选“自定义请求头”（鉴权），填完「测试连接」再保存；默认值仍是局域网地址，用户按实际环境修改。
 - 踩坑记录：① pnpm 11 用 `allowBuilds`（pnpm-workspace.yaml）批准构建脚本；② esbuild ESM 打包 CJS 依赖需 createRequire banner；③ **TSX 经典坑**：多行 JSX 元素若 `</tag>` 单独一行会被当泛型断言解析，需 `></tag>` 同行写法。
 - **M2 下一步**：pdfjs-dist 取文字层 + 行重建 + LLM 结构化 + 交易入库。
+
+### 2026-10-14 M1.5（Avalon 对齐 + 三级结构，提交 638c494 + 11de0ca）
+
+调研 `avalon-web`（详见 `docs/avalon-reference.md`）后，用户确认以下决策：
+
+- **D17（Avalon UI 对齐）**：flow 作为 Avalon 同系列应用，视觉/交互全量对齐 Avalon 设计系统：Avalon `:root` 设计令牌（#f4f4f5 灰底/白面板/#3d5ccc 主色/13px/隐藏滚动条）、36px 顶栏 AppChrome、ListRow 列表行（⋯ 行菜单）、Avalon 模态（深蓝模糊蒙层+白底 12px 圆角）、按钮/输入/空态。左侧深色导航废弃。
+- **D18（三级业务结构，目录即实体）**：客户（xx 上市公司）→ 融资项目（IPO/再融资/可转债）→ 报告期任务（流水分析）。每级目录由用户选定或 flow 创建，并写标记文件 `.flow/client.json|project.json|task.json`（对齐 Avalon `.avalon/project.md`：目录是真身，SQLite 只是索引，换机/目录移动可重新登记找回）。
+- **D19（v1 重心 + 关联方延后）**：v1 重心 = 把 PDF 流水高效准确地转成 LLM 可处理的结构化数据（双通道解析+余额校验+修正队列）→ 逐笔分类 → 汇总 + R3/R4/R5 规则。主体/关联方登记延至 v1.1 作为风险排查子项：登记挂**客户层**（客户自身/子公司/关联方基础清单）+ **报告期任务差异**（本期新增/排除，体现"关联方逐年变化"）；R1/R2（专户最高危、关联方命中）v1 默认关闭。
+- **D20（报告落盘与打包）**：Excel/MD 报告输出到任务目录 `flow-output/` 子文件夹（与输入 PDF 隔离）。Windows 绿色包 = 便携 Node + win 预编译 better-sqlite3 + 服务端 bundle + 前端 dist + start.bat + 快速上手，`node scripts/build-win-zip.mjs` 一键组装，release/ 资产入仓；发布走 GitHub Release 资产（v0.1.0~v0.1.2）。
