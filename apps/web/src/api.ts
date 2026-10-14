@@ -12,7 +12,12 @@ import {
   ProjectBrief,
   ProjectView,
   Settings,
+  TaskBrief,
+  TaskListItem,
   TaskView,
+  TxOptions,
+  TxPageResult,
+  TxQuery,
 } from '@flow/shared';
 
 export interface LlmModelsResult {
@@ -95,4 +100,18 @@ export const api = {
   deleteTask: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   refreshTask: (id: number) => j<RefreshResult>(`/api/tasks/${id}/refresh`, { method: 'POST' }),
   openTaskFolder: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}/open`, { method: 'POST' }),
+  listTasks: () => j<TaskListItem[]>('/api/tasks'),
+  recentTasks: () => j<TaskBrief[]>('/api/tasks/recent'),
+
+  /* ---------- 解析 / 交易浏览器（M2） ---------- */
+  parseFile: (id: number) => j<{ ok: boolean; queued: boolean }>(`/api/files/${id}/parse`, { method: 'POST' }),
+  parseTask: (taskId: number) =>
+    j<{ ok: boolean; added: number; queued: number }>(`/api/files/task/${taskId}/parse`, { method: 'POST' }),
+  deleteFile: (id: number) => j<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' }),
+  listTransactions: (q: TxQuery) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v));
+    return j<TxPageResult>(`/api/transactions?${p.toString()}`);
+  },
+  txOptions: () => j<TxOptions>('/api/transactions/options'),
 };

@@ -73,12 +73,14 @@ CREATE TABLE IF NOT EXISTS transactions (
   subject_id INTEGER,
   risk_flags TEXT NOT NULL DEFAULT '[]',
   confidence REAL NOT NULL DEFAULT 1,
+  review_note TEXT,
   raw_text TEXT,
   status TEXT NOT NULL DEFAULT 'ok'
 );
 CREATE INDEX IF NOT EXISTS idx_tx_file ON transactions(file_id);
 CREATE INDEX IF NOT EXISTS idx_tx_counterparty ON transactions(counterparty);
--- 主体登记（v1.1 启用）：客户层基础清单 + 报告期任务差异（本期新增/排除）
+CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
+CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status);-- 主体登记（v1.1 启用）：客户层基础清单 + 报告期任务差异（本期新增/排除）
 CREATE TABLE IF NOT EXISTS subjects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL DEFAULT 'client' CHECK (scope IN ('client','task')),
@@ -121,6 +123,10 @@ CREATE TABLE IF NOT EXISTS settings (
 `);
 
 /* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */
+
+if (!tableCols('transactions').includes('review_note')) {
+  db.exec('ALTER TABLE transactions ADD COLUMN review_note TEXT');
+}
 
 if (!tableCols('projects').includes('client_id')) {
   db.exec('ALTER TABLE projects ADD COLUMN client_id INTEGER');

@@ -14,3 +14,8 @@ export function formatDateTime(iso?: string): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/** 金额千分位（2 位小数，交易表用） */
+export function formatMoney(n: number): string {
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}

@@ -115,3 +115,16 @@
 - **D18（三级业务结构，目录即实体）**：客户（xx 上市公司）→ 融资项目（IPO/再融资/可转债）→ 报告期任务（流水分析）。每级目录由用户选定或 flow 创建，并写标记文件 `.flow/client.json|project.json|task.json`（对齐 Avalon `.avalon/project.md`：目录是真身，SQLite 只是索引，换机/目录移动可重新登记找回）。
 - **D19（v1 重心 + 关联方延后）**：v1 重心 = 把 PDF 流水高效准确地转成 LLM 可处理的结构化数据（双通道解析+余额校验+修正队列）→ 逐笔分类 → 汇总 + R3/R4/R5 规则。主体/关联方登记延至 v1.1 作为风险排查子项：登记挂**客户层**（客户自身/子公司/关联方基础清单）+ **报告期任务差异**（本期新增/排除，体现"关联方逐年变化"）；R1/R2（专户最高危、关联方命中）v1 默认关闭。
 - **D20（报告落盘与打包）**：Excel/MD 报告输出到任务目录 `flow-output/` 子文件夹（与输入 PDF 隔离）。Windows 绿色包 = 便携 Node + win 预编译 better-sqlite3 + 服务端 bundle + 前端 dist + start.bat + 快速上手，`node scripts/build-win-zip.mjs` 一键组装，release/ 资产入仓；发布走 GitHub Release 资产（v0.1.0~v0.1.2）。
+
+### 2026-10-14 M2（文字层解析管线 + 交易浏览器，本次提交）
+
+范围（PLAN §6 M2）：三级模型 + 文件监听；文字层通道 → 行重建 → LLM 结构化 → 交易入库 + 交易浏览器。
+
+- **D21（dev Node 版本策略）**：微服容器 Node 24.20.0 + better-sqlite3 12.x 有已知 GC 崩溃（Node 24.19/24.20 回归，`RemoveEnvironmentCleanupHook` 断言，nodejs 24.21 修复；electron#53387 / karakeep#2989 同款）→ dev 统一用 `~/.local/flow-node22`（v22.23.3，与生产 zip 便携 Node 同版本），bsq 按 ABI 127 重建；生产 zip（Node 22）不受影响。
+- **D22（LLM 调用形态）**：vLLM 非流式回包会缓冲到生成完才回 → Jetson 27B 超 undici 300s headers 超时「fetch failed」；改**流式（SSE）接收** + `response_format: json_object` + `chat_template_kwargs: {enable_thinking: false}`（Qwen3 系关思考，2 页一批 15~20s 出结果，纯思考模式要 5min+）。
+- **文字层通道**：pdfjs-dist 6（legacy 构建，external 不进 bundle）；Node 端 standard_fonts/cmaps 用自定义 `BinaryDataFactory` 直读磁盘（pdfjs 的 Node 工厂 `fs.readFile(file: 字符串)` 不认 URL，已踩）；中文 CID 字体（STSong 等）必须 `cMapData`。
+- **行重建**：y 中心聚类（容差=行高**中位**×50%——用首个间隙算容差会被表尾大间距拉爆，已踩）；行内 x 排序，间距 >10pt 插 `\t`；每行带行号喂 LLM，`line_no` 可回溯原始行。
+- **LLM 结构化**：≤3 页/批 + 上批末 3 行衔接；金额恒正 + direction；**direction 判定优先用余额增减**（收入/支出双列在文字层里空列消失，LLM 看不到是哪一列）；质检 = 日期格式/行号越界/低置信/**余额连续性初检**（断裂标复核），复核原因落 `transactions.review_note`（M3 修正队列直接用）。
+- **自动解析**：chokidar 监听任务目录（PDF 放入即登记+入队；删未解析的 PDF 自动清登记）；启动时补扫 + 复位被打断的 parsing；队列并发 = 设置页 llmConcurrency。
+- **交易浏览器**：跨任务全量交易表（任务/银行/账户/日期/对手方/状态/分类 过滤 + 排序 + 分页 + 流入/流出聚合），行展开看**原始布局行**（raw_text）+ 页/行号定位 + 复核原因；任务页「查看交易」/文件行下钻/删除登记；顶栏「当前任务」上下文切换器（Avalon ChromeContextTab，最近 5 任务）。
+- **验收（样例 PDF 端到端）**：32 笔全中（= 真实行数）、文件元数据（银行/账号/户名/期间）自动回写、流入−流出与首末余额差对账一致、冲突行 100% 进复核队列（6/32，均为 LLM 主动降置信）。

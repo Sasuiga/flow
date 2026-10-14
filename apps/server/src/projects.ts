@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { db } from './db.js';
 import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfFiles } from './fsutil.js';
 import { toProjectView } from './clients.js';
+import { refreshTaskFilesAuto } from './parse.js';
+import { syncTaskWatchers } from './watch.js';
 import { BankFile, ClientBrief, CreateEntityInput, FlowTask, ProjectBrief, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
@@ -58,6 +60,7 @@ function refreshTaskFiles(taskId: number, folderPath: string): number {
   }
   return added;
 }
+void refreshTaskFiles;
 
 export const projectsRouter = Router();
 
@@ -93,7 +96,10 @@ projectsRouter.post('/:id/tasks', (req, res) => {
         'INSERT INTO tasks(project_id, name, folder_path, status, created_at, updated_at) VALUES(?,?,?,?,?,?)',
       )
       .run(Number(projectRow.id), name, folderPath, 'active', now(), now());
-    res.json(toTaskView(db.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(r.lastInsertRowid)) as Record<string, unknown>));
+    const taskId = Number(r.lastInsertRowid);
+    refreshTaskFilesAuto(taskId, folderPath); // M2：目录里已有 PDF 自动登记 + 解析
+    void syncTaskWatchers(); // M2：chokidar 监听新任务目录
+    res.json(toTaskView(db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown>));
   } catch (e) {
     res.status(409).json({ error: friendlyFsError(e).message });
   }
@@ -109,6 +115,7 @@ projectsRouter.post('/:id/open', (req, res) => {
 
 projectsRouter.delete('/:id', (req, res) => {
   db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
+  void syncTaskWatchers(); // 任务级联删除 → 释放监听
   res.json({ ok: true });
 });
 
@@ -134,12 +141,12 @@ tasksRouter.get('/:id', (req, res) => {
   res.json({ task: toTaskView(row), project, client, files });
 });
 
-/** 重新扫描任务目录 PDF（放入新文件后调用，幂等） */
+/** 重新扫描任务目录 PDF（放入新文件后调用，幂等；M2 起新文件自动入解析队列） */
 tasksRouter.post('/:id/refresh', (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!row) return res.status(404).json({ error: '任务不存在' });
-  const added = refreshTaskFiles(id, row.folder_path as string);
+  const added = refreshTaskFilesAuto(id, row.folder_path as string);
   db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(now(), id);
   res.json({ ok: true, added });
 });
@@ -154,5 +161,6 @@ tasksRouter.post('/:id/open', (req, res) => {
 
 tasksRouter.delete('/:id', (req, res) => {
   db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
+  void syncTaskWatchers();
   res.json({ ok: true });
 });

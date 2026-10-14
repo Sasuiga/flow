@@ -73,6 +73,12 @@ export interface TaskView extends FlowTask {
   txCount: number;
 }
 
+/** 任务列表（交易浏览器过滤器/上下文切换器用，带层级名称） */
+export interface TaskListItem extends TaskView {
+  clientName: string;
+  projectName: string;
+}
+
 /** 实体创建位置：create = 在 parentPath 下创建名为 name 的目录；use = 直接使用已有目录 */
 export type EntityLocation =
   | { kind: 'create'; parentPath: string }
@@ -183,6 +189,81 @@ export interface RuleHit {
   detail: string;
   status: HitStatus;
   createdAt: string;
+}
+
+/* ---------- 交易浏览器（M2） ---------- */
+
+/** 交易行 + 文件/任务上下文（跨任务浏览用） */
+export interface TxRow {
+  id: number;
+  fileId: number;
+  fileName: string;
+  taskName: string;
+  projectName: string;
+  clientName: string;
+  bank?: string;
+  accountNo?: string;
+  page: number;
+  lineNo: number;
+  date?: string;
+  summary?: string;
+  amount: number;
+  direction: Direction;
+  balance?: number;
+  counterparty?: string;
+  counterpartyAccount?: string;
+  channel?: string;
+  category?: string;
+  categorySrc?: 'llm' | 'manual';
+  riskFlags: string[];
+  confidence: number;
+  /** 复核原因（低置信/日期/行号/余额断裂等，M3 修正队列展示） */
+  reviewNote?: string;
+  rawText?: string;
+  status: TxStatus;
+}
+
+export interface TxQuery {
+  taskId?: number;
+  fileId?: number;
+  bank?: string;
+  accountNo?: string;
+  from?: string;
+  to?: string;
+  counterparty?: string;
+  q?: string;
+  status?: TxStatus;
+  /** 分类过滤：'__none__' = 未分类 */
+  category?: string;
+  /** date_desc（默认）/ date_asc / amount_desc */
+  sort?: 'date_desc' | 'date_asc' | 'amount_desc';
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TxPageResult {
+  rows: TxRow[];
+  total: number;
+  inflow: number;
+  outflow: number;
+}
+
+export interface TxOptions {
+  tasks: { id: number; name: string; clientName: string; projectName: string; txCount: number }[];
+  banks: string[];
+  accounts: string[];
+  categories: string[];
+}
+
+/** 顶栏「当前任务」上下文切换器（Avalon ChromeContextTab，M2 交付） */
+export interface TaskBrief {
+  id: number;
+  name: string;
+  clientName: string;
+  projectName: string;
+  fileCount: number;
+  txCount: number;
+  updatedAt: string;
 }
 
 export interface DashboardSummary {

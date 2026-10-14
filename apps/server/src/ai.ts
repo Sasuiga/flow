@@ -59,3 +59,81 @@ export async function fetchLLMModels(base: string, extraHeader?: string): Promis
     return { ok: false, models: [], detail: `连接失败：${(e as Error).message}` };
   }
 }
+
+/**
+ * OpenAI 兼容 chat/completions（解析管线用，M2）。
+ * 流式接收（vLLM 非流式会缓冲到生成完才回包，Jetson 上超过 undici 300s headers 超时）。
+ * 返回 content 文本（reasoning 不计入）；调用方自行解析 JSON（extractJson 容错）。
+ */
+export async function llmChat(
+  base: string,
+  model: string,
+  extraHeader: string | undefined,
+  system: string,
+  user: string,
+  opts: { jsonMode?: boolean; maxTokens?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    model,
+    temperature: 0,
+    stream: true,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    // Qwen3 系 thinking 模型：结构化提取任务关思考，省 token 且快（不支持的模型会忽略）
+    chat_template_kwargs: { enable_thinking: false },
+  };
+  if (opts.jsonMode) body.response_format = { type: 'json_object' };
+  if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+  let res: Response;
+  try {
+    res = await fetch(strip(base) + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...parseExtraHeader(extraHeader ?? '') },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 900_000),
+    });
+  } catch (e) {
+    throw new Error(`LLM 端点不可达（${strip(base)}）：${(e as Error).message}`);
+  }
+  if (!res.ok) {
+    const text = (await res.text().catch(() => '')).slice(0, 200);
+    throw new Error(`LLM HTTP ${res.status}${text ? `：${text}` : ''}`);
+  }
+  if (!res.body) throw new Error('LLM 响应无 body');
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let content = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const j = JSON.parse(data) as { choices?: { delta?: { content?: string; reasoning?: string } }[] };
+        const delta = j.choices?.[0]?.delta;
+        if (delta?.content) content += delta.content;
+      } catch {
+        /* 半行 JSON，忽略 */
+      }
+    }
+  }
+  if (content.trim().length === 0) throw new Error('LLM 返回为空（模型名是否有效？或纯思考模式未输出）');
+  return content;
+}
+
+/** 从 LLM 输出里提取 JSON 对象：去代码块/前后杂讯，取第一个完整 {…} */
+export function extractJson<T>(text: string): T {
+  let s = text.trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) s = fence[1].trim();
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error(`LLM 输出中未找到 JSON：${s.slice(0, 80)}…`);
+  return JSON.parse(s.slice(start, end + 1)) as T;
+}

@@ -6,6 +6,7 @@ import {
   openFolder,
   resolveEntityLocation,
 } from './fsutil.js';
+import { syncTaskWatchers } from './watch.js';
 import {
   Client,
   ClientView,
@@ -153,5 +154,6 @@ clientsRouter.post('/:id/open', (req, res) => {
 clientsRouter.delete('/:id', (req, res) => {
   db.prepare('DELETE FROM projects WHERE client_id = ?').run(req.params.id); // 刷新项目列表排序
   db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
+  void syncTaskWatchers(); // 其下任务级联删除 → 释放监听
   res.json({ ok: true });
 });

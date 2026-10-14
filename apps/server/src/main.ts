@@ -7,6 +7,9 @@ import { probeLLM, probeOCR, fetchLLMModels } from './ai.js';
 import { clientsRouter } from './clients.js';
 import { projectsRouter, tasksRouter } from './projects.js';
 import { fsRouter } from './fs.js';
+import { transactionsRouter, filesRouter, taskListRouter } from './tx.js';
+import { initWatchers } from './watch.js';
+import { autoParsePending, parseQueue } from './parse.js';
 import { Settings } from '@flow/shared';
 
 const app = express();
@@ -52,9 +55,13 @@ app.post('/api/llm/models', async (req, res) => {
 });
 
 app.use('/api/projects', projectsRouter);
+// 任务列表/最近任务 先于 /api/tasks/:id 注册，避免 'recent' 被当 id
+app.use('/api/tasks', taskListRouter);
 app.use('/api/tasks', tasksRouter);
 app.use('/api/clients', clientsRouter);
 app.use('/api/fs', fsRouter);
+app.use('/api/transactions', transactionsRouter);
+app.use('/api/files', filesRouter);
 
 /* Web 静态资源：兼容仓库布局（dev/dist）与 zip 绿色包布局 */
 const distCandidates = [
@@ -76,4 +83,10 @@ if (dist) {
 const port = Number(process.env.PORT || 4120);
 app.listen(port, () => {
   console.log(`[flow] http://localhost:${port}  (web dist: ${existsSync(dist ?? '') ? '已加载' : '未构建，dev 模式请用 vite :5173'})`);
+  // M2：任务目录监听 + 解析队列（新 PDF 自动登记并解析；启动时补扫+自愈）
+  void initWatchers().then(() => {
+    autoParsePending(); // 复位被打断的 parsing + 开跑未解析文件
+    parseQueue.start();
+    console.log('[flow] 任务目录监听与解析队列已启动');
+  });
 });
