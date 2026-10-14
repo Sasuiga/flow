@@ -27,6 +27,14 @@ cd apps/server && node dist/main.js   # http://localhost:4120
 - 目录浏览器根：`FLOW_DOC_ROOT`（未设=用户主目录）；微服部署时设为网盘工作目录
 - 端口：`PORT`（默认 4120）
 
+## 发布 Windows 绿色包（v2 部署微服前）
+
+```bash
+node scripts/build-win-zip.mjs <版本号>   # 产物在 /tmp/flowpkg/flow-win-x64-<版本号>.zip
+```
+
+打包后：`git tag v<版本号>` → GitHub release 附 zip 资产（release/ 目录含 start.bat 与快速上手）。
+
 ## 当前里程碑状态
 
 - [x] M1：monorepo 脚手架 + 设置页（LLM/OCR 端点探测、模型自动拉取）
