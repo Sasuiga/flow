@@ -1,0 +1,13 @@
+{
+  "name": "flow",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"pnpm --filter flow-server dev\" \"pnpm --filter flow-web dev\"",
+    "build": "pnpm --filter flow-web build && pnpm --filter flow-server build",
+    "start": "node apps/server/dist/main.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
