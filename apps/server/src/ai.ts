@@ -2,10 +2,20 @@ import { ProbeResult } from '@flow/shared';
 
 const strip = (u: string) => u.replace(/\/+$/, '');
 
+/** 解析 "Name: value" 形式的自定义请求头；空/非法返回 undefined */
+export function parseExtraHeader(v: string): Record<string, string> | undefined {
+  const m = (v ?? '').trim().match(/^([A-Za-z0-9-]+)\s*:\s*(.+)$/);
+  if (!m) return undefined;
+  return { [m[1].trim()]: m[2].trim() };
+}
+
 /** 探测 vLLM（OpenAI 兼容）：GET {base}/models */
-export async function probeLLM(base: string, model: string): Promise<ProbeResult> {
+export async function probeLLM(base: string, model: string, extraHeader?: string): Promise<ProbeResult> {
   try {
-    const res = await fetch(strip(base) + '/models', { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(strip(base) + '/models', {
+      headers: parseExtraHeader(extraHeader ?? ''),
+      signal: AbortSignal.timeout(10000),
+    });
     if (!res.ok) return { ok: false, detail: `HTTP ${res.status}（${strip(base)}/models）` };
     const data = (await res.json()) as { data?: { id: string }[] };
     const ids = (data.data ?? []).map((m) => m.id);
@@ -19,9 +29,12 @@ export async function probeLLM(base: string, model: string): Promise<ProbeResult
 }
 
 /** 探测 PP-OCRv6：GET {base}/health */
-export async function probeOCR(base: string): Promise<ProbeResult> {
+export async function probeOCR(base: string, extraHeader?: string): Promise<ProbeResult> {
   try {
-    const res = await fetch(strip(base) + '/health', { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(strip(base) + '/health', {
+      headers: parseExtraHeader(extraHeader ?? ''),
+      signal: AbortSignal.timeout(10000),
+    });
     if (!res.ok) return { ok: false, detail: `HTTP ${res.status}（${strip(base)}/health）` };
     const d = (await res.json()) as { status?: string; model?: string };
     return { ok: true, detail: `ready${d.model ? `：${d.model}` : ''}` };

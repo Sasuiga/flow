@@ -72,10 +72,15 @@ export default function SettingsPage() {
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card title="AI 服务端点（局域网算力舱）" size="small">
+      <Card title="AI 服务端点（按需填写，保存后生效）" size="small">
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 0 }}>
+          笔记本与算力舱在同一局域网时，可直连 192.168.1.17（LLM :8005 / OCR :8008）；
+          不在同一局域网时，填懒猫外网穿透地址（如 https://xxx.heiyu.space…），需要鉴权时在“自定义请求头”里填。
+          填完点「测试连接」验证，再点「保存」。
+        </Typography.Paragraph>
         <Form form={form} layout="vertical" style={{ maxWidth: 640 }}>
           <Form.Item label="LLM 端点（vLLM，OpenAI 兼容）" name="llmBase" rules={[{ required: true }]}>
-            <Input placeholder="http://192.168.1.17:8005/v1" />
+            <Input placeholder="http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space/v1" />
           </Form.Item>
           <Form.Item
             label="LLM 模型名"
@@ -85,8 +90,22 @@ export default function SettingsPage() {
           >
             <Input placeholder="qwen-3.8-27b-uncensored" />
           </Form.Item>
+          <Form.Item
+            label="LLM 自定义请求头（可选）"
+            name="llmExtraHeader"
+            extra="端点需要鉴权时填，格式：名称: 值，例如 Authorization: Bearer sk-xxx 或 X-Api-Key: abc"
+          >
+            <Input placeholder="例如 Authorization: Bearer sk-local" allowClear />
+          </Form.Item>
           <Form.Item label="OCR 端点（PP-OCRv6）" name="ocrBase" rules={[{ required: true }]}>
-            <Input placeholder="http://192.168.1.17:8008" />
+            <Input placeholder="http://192.168.1.17:8008 或 https://xxx.heiyu.space" />
+          </Form.Item>
+          <Form.Item
+            label="OCR 自定义请求头（可选）"
+            name="ocrExtraHeader"
+            extra="同 LLM，OCR 端点需要鉴权时填"
+          >
+            <Input placeholder="例如 X-Api-Key: abc" allowClear />
           </Form.Item>
           <Form.Item label="LLM 并发数" name="llmConcurrency" extra="同时跑的 LLM 解析任务数">
             <InputNumber min={1} max={4} style={{ width: 120 }} />

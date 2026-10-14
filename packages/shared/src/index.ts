@@ -9,11 +9,15 @@ export type EntityType = 'self' | 'subsidiary' | 'related_party';
 export type AccountKind = 'dedicated' | 'general' | 'unknown';
 
 export interface Settings {
-  /** vLLM OpenAI 兼容基址，如 http://192.168.1.17:8005/v1 */
+  /** vLLM OpenAI 兼容基址，如 http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space/v1 */
   llmBase: string;
   llmModel: string;
-  /** PP-OCRv6 基址，如 http://192.168.1.17:8008 */
+  /** 可选：LLM 自定义请求头，如 "Authorization: Bearer sk-xxx" 或 "X-Api-Key: abc" */
+  llmExtraHeader: string;
+  /** PP-OCRv6 基址，如 http://192.168.1.17:8008 或 https://xxx.heiyu.space */
   ocrBase: string;
+  /** 可选：OCR 自定义请求头 */
+  ocrExtraHeader: string;
   llmConcurrency: number;
 }
 
@@ -111,7 +115,9 @@ export interface DashboardSummary {
 export const DEFAULT_SETTINGS: Settings = {
   llmBase: 'http://192.168.1.17:8005/v1',
   llmModel: 'qwen-3.8-27b-uncensored',
+  llmExtraHeader: '',
   ocrBase: 'http://192.168.1.17:8008',
+  ocrExtraHeader: '',
   llmConcurrency: 2,
 };
 

@@ -6,6 +6,8 @@ export function getSettings(): Settings {
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   for (const r of rows) {
     if (r.key === 'llmConcurrency') s.llmConcurrency = Number(r.value) || s.llmConcurrency;
+    else if (r.key === 'llmExtraHeader' || r.key === 'ocrExtraHeader')
+      (s as Record<string, unknown>)[r.key] = r.value;
     else (s as Record<string, unknown>)[r.key] = r.value;
   }
   return s;
@@ -18,7 +20,9 @@ export function saveSettings(s: Settings): Settings {
   const tx = db.transaction(() => {
     up.run('llmBase', s.llmBase);
     up.run('llmModel', s.llmModel);
+    up.run('llmExtraHeader', s.llmExtraHeader ?? '');
     up.run('ocrBase', s.ocrBase);
+    up.run('ocrExtraHeader', s.ocrExtraHeader ?? '');
     up.run('llmConcurrency', String(s.llmConcurrency));
   });
   tx();

@@ -19,7 +19,10 @@ app.put('/api/settings', (req, res) => res.json(saveSettings(req.body as Setting
 app.post('/api/ai/probe', async (req, res) => {
   const body = req.body as Partial<Settings> | undefined;
   const s = body && Object.keys(body).length ? { ...getSettings(), ...body } : getSettings();
-  const [llm, ocr] = await Promise.all([probeLLM(s.llmBase, s.llmModel), probeOCR(s.ocrBase)]);
+  const [llm, ocr] = await Promise.all([
+    probeLLM(s.llmBase, s.llmModel, s.llmExtraHeader),
+    probeOCR(s.ocrBase, s.ocrExtraHeader),
+  ]);
   res.json({ llm, ocr });
 });
 
