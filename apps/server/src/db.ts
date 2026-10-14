@@ -10,17 +10,46 @@ export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+const now = () => new Date().toISOString();
+const tableCols = (t: string): string[] =>
+  (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((r) => r.name);
+
 db.exec(`
-CREATE TABLE IF NOT EXISTS projects (
+-- 客户（xx 上市公司）：一家公司会有多次融资
+CREATE TABLE IF NOT EXISTS clients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  folder_path TEXT NOT NULL,
+  folder_path TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','archived')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS files (
+-- 融资项目（IPO/再融资/可转债…）：属客户
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  folder_path TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(client_id, name)
+);
+-- 报告期任务（流水分析单元）：属项目，PDF 放任务目录，报告输出任务目录 flow-output/
+CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  folder_path TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','archived')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   rel_path TEXT NOT NULL,
   bank TEXT, account_no TEXT, account_name TEXT,
   period_start TEXT, period_end TEXT,
@@ -28,9 +57,8 @@ CREATE TABLE IF NOT EXISTS files (
   tx_count INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   updated_at TEXT NOT NULL,
-  UNIQUE(project_id, rel_path)
+  UNIQUE(task_id, rel_path)
 );
-CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
 CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -50,15 +78,24 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 CREATE INDEX IF NOT EXISTS idx_tx_file ON transactions(file_id);
 CREATE INDEX IF NOT EXISTS idx_tx_counterparty ON transactions(counterparty);
+-- 主体登记（v1.1 启用）：客户层基础清单 + 报告期任务差异（本期新增/排除）
 CREATE TABLE IF NOT EXISTS subjects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope TEXT NOT NULL DEFAULT 'global' CHECK (scope IN ('global','project')),
-  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL DEFAULT 'client' CHECK (scope IN ('client','task')),
+  client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  excluded INTEGER NOT NULL DEFAULT 0,
   name TEXT NOT NULL,
   aliases TEXT NOT NULL DEFAULT '[]',
   entity_type TEXT NOT NULL DEFAULT 'related_party',
   account_kind TEXT NOT NULL DEFAULT 'unknown',
   note TEXT
+);
+CREATE TABLE IF NOT EXISTS name_matches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  counterparty TEXT NOT NULL,
+  subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  method TEXT NOT NULL DEFAULT 'exact'
 );
 CREATE TABLE IF NOT EXISTS rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,15 +120,64 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
-/** 内置规则种子（M5 启用；先建好避免重复插入） */
+/* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */
+
+if (!tableCols('projects').includes('client_id')) {
+  db.exec('ALTER TABLE projects ADD COLUMN client_id INTEGER');
+}
+if (!tableCols('projects').includes('status')) {
+  db.exec("ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+}
+if (!tableCols('files').includes('task_id')) {
+  // M1 的 files 尚无解析结果（M2 才产出交易），直接重建挂 task_id
+  db.exec('DROP TABLE IF EXISTS files');
+  db.exec(`
+CREATE TABLE files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  rel_path TEXT NOT NULL,
+  bank TEXT, account_no TEXT, account_name TEXT,
+  period_start TEXT, period_end TEXT,
+  status TEXT NOT NULL DEFAULT 'scanned',
+  tx_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id, rel_path)
+);
+CREATE INDEX IF NOT EXISTS idx_files_task ON files(task_id);
+`);
+}
+// 索引统一在迁移之后创建：旧库的 files 表重建前没有 task_id 列，projects 表补列前没有 client_id
+db.exec('CREATE INDEX IF NOT EXISTS idx_files_task ON files(task_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id)');
+// 遗留项目（client_id 为空）挂到自动创建的「遗留客户」下，避免 NULL 外键
+const legacy = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE client_id IS NULL').get() as { c: number };
+if (legacy.c > 0) {
+  const first = db.prepare(
+    'SELECT folder_path FROM projects WHERE client_id IS NULL ORDER BY id LIMIT 1',
+  ).get() as { folder_path: string };
+  let cid: number;
+  try {
+    const r = db
+      .prepare('INSERT INTO clients(name, folder_path, created_at, updated_at) VALUES(?,?,?,?)')
+      .run('遗留客户', path.dirname(first.folder_path), now(), now());
+    cid = Number(r.lastInsertRowid);
+  } catch {
+    cid = (db.prepare("SELECT id FROM clients WHERE name = '遗留客户'").get() as { id: number }).id;
+  }
+  db.prepare('UPDATE projects SET client_id = ? WHERE client_id IS NULL').run(cid);
+}
+
+/* ---------- 内置规则种子（M5 启用；R1/R2 默认关闭，v1.1 随主体登记启用） ---------- */
+
 const seeded = (db.prepare('SELECT COUNT(*) c FROM rules').get() as { c: number }).c;
 if (seeded === 0) {
   const ins = db.prepare(
-    'INSERT INTO rules(name, type, params, severity, enabled, builtin) VALUES(?,?,?,?,1,1)',
+    'INSERT INTO rules(name, type, params, severity, enabled, builtin) VALUES(?,?,?,?,?,1)',
   );
-  ins.run('募集资金转自身/子公司一般户', 'R1_dedicated_to_general', '{}', 'high');
-  ins.run('关联方资金往来', 'R2_related_party', '{}', 'medium');
-  ins.run('大额整额转账', 'R3_large_round', '{"threshold": 1000000}', 'medium');
-  ins.run('非工作时段交易', 'R4_off_hours', '{}', 'low');
-  ins.run('当日快进快出', 'R5_fast_roundtrip', '{"withinDays": 3, "ratio": 0.7}', 'medium');
+  ins.run('募集资金转自身/子公司一般户', 'R1_dedicated_to_general', '{}', 'high', 0);
+  ins.run('关联方资金往来', 'R2_related_party', '{}', 'medium', 0);
+  ins.run('大额整额转账', 'R3_large_round', '{"threshold": 1000000}', 'medium', 1);
+  ins.run('非工作时段交易', 'R4_off_hours', '{}', 'low', 1);
+  ins.run('当日快进快出', 'R5_fast_roundtrip', '{"withinDays": 3, "ratio": 0.7}', 'medium', 1);
 }

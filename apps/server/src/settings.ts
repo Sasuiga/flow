@@ -7,8 +7,8 @@ export function getSettings(): Settings {
   for (const r of rows) {
     if (r.key === 'llmConcurrency') s.llmConcurrency = Number(r.value) || s.llmConcurrency;
     else if (r.key === 'llmExtraHeader' || r.key === 'ocrExtraHeader')
-      (s as Record<string, unknown>)[r.key] = r.value;
-    else (s as Record<string, unknown>)[r.key] = r.value;
+      (s as unknown as Record<string, unknown>)[r.key] = r.value;
+    else (s as unknown as Record<string, unknown>)[r.key] = r.value;
   }
   return s;
 }

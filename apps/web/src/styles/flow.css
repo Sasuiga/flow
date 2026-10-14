@@ -1,0 +1,972 @@
+/* ==========================================================================
+   flow 设计系统 — 对齐 Avalon（src/renderer/src/styles.css :root 令牌）
+   "一块工作台、一张纸"：灰底 #f4f4f5，白面板，主色 #3d5ccc，正文 13px
+   ========================================================================== */
+
+:root {
+  --ui-bg: #f4f4f5;
+  --ui-stage: #f4f4f5;
+  --ui-panel: #ffffff;
+  --ui-panel-subtle: #f4f4f5;
+  --ui-rail-bg: #f4f4f5;
+  --ui-rail-surface: #ffffff;
+  --ui-chrome: #f4f4f5;
+  --ui-border: rgba(28, 34, 48, 0.08);
+  --ui-border-strong: rgba(28, 34, 48, 0.13);
+  --ui-text: #1b1d24;
+  --ui-muted: #5c616c;
+  --ui-faint: #8b909b;
+  --ui-hover: rgba(28, 34, 48, 0.045);
+  --ui-active: rgba(28, 34, 48, 0.07);
+  --ui-primary: #3d5ccc;
+  --ui-primary-hover: #324db8;
+  --ui-primary-soft: rgba(61, 92, 204, 0.1);
+  --ui-primary-border: rgba(61, 92, 204, 0.24);
+  --ui-focus-ring: rgba(61, 92, 204, 0.36);
+  --ui-icon: #6a7080;
+  --ui-danger: #c43d48;
+  --ui-success: #2a8f56;
+  --ui-warning: #8a6a1f;
+  --ui-radius: 8px;
+  --ui-radius-sm: 6px;
+  --ui-shadow-lg: 0 10px 28px rgba(16, 24, 40, 0.08);
+  --ui-font: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --ui-font-mono: "Cascadia Code", "JetBrains Mono", "Microsoft YaHei", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  color-scheme: light;
+  font-family: var(--ui-font);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ui-text);
+  background: var(--ui-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  min-width: 0;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 1px;
+}
+
+/* ---------- 应用外壳 ---------- */
+
+.flow-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ui-bg);
+}
+
+.flow-root *,
+.flow-root *::-webkit-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.flow-root *::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* ---------- 顶栏 AppChrome（Avalon app-chrome：36px，标签 + 设置） ---------- */
+
+.app-chrome {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 6px 0 8px;
+  background: var(--ui-chrome);
+  border-bottom: 1px solid var(--ui-border);
+  user-select: none;
+}
+
+.app-chrome-tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-chrome-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  white-space: nowrap;
+}
+
+.app-chrome-tab:hover:not(.active) {
+  color: var(--ui-text);
+  background: var(--ui-hover);
+}
+
+.app-chrome-tab.active {
+  background: var(--ui-panel);
+  color: var(--ui-primary);
+  box-shadow: 0 1px 2px rgba(28, 34, 48, 0.06), 0 0 0 1px var(--ui-border);
+}
+
+.app-chrome-tab.disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.app-chrome-trailing {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: max-content;
+}
+
+.app-chrome-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-icon);
+}
+
+.app-chrome-icon-button:hover {
+  color: var(--ui-text);
+  background: var(--ui-hover);
+}
+
+/* ---------- 主区 ---------- */
+
+.page-main {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ui-bg);
+}
+
+.page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+}
+
+/* 页面头部（Avalon task-home-header） */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.page-header h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.page-header p {
+  margin: 0;
+  color: var(--ui-muted);
+}
+
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 面包屑（客户 → 项目 → 任务 下钻） */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.breadcrumb-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.breadcrumb-link:hover {
+  color: var(--ui-text);
+  background: var(--ui-hover);
+}
+
+.breadcrumb-sep {
+  display: inline-flex;
+  color: var(--ui-faint);
+}
+
+.breadcrumb-current {
+  color: var(--ui-text);
+  font-weight: 600;
+}
+
+/* 实体条（项目/任务详情顶部：名称 + 路径 + 状态 + 菜单） */
+.entity-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-panel);
+  box-shadow: var(--ui-shadow-lg);
+}
+
+.entity-bar-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.entity-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.entity-bar-path {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.entity-bar-path .path-chip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-chip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+}
+
+/* 状态 chip（对齐 Avalon task-status-badge 观感） */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip-muted {
+  background: var(--ui-panel-subtle);
+  color: var(--ui-muted);
+  border: 1px solid var(--ui-border);
+}
+
+.chip-danger {
+  background: rgba(196, 61, 72, 0.08);
+  color: var(--ui-danger);
+  border: 1px solid rgba(196, 61, 72, 0.18);
+}
+
+.chip-success {
+  background: rgba(42, 143, 86, 0.08);
+  color: var(--ui-success);
+  border: 1px solid rgba(42, 143, 86, 0.18);
+}
+
+.chip-primary {
+  background: var(--ui-primary-soft);
+  color: var(--ui-primary);
+  border: 1px solid var(--ui-primary-border);
+}
+
+.chip-warning {
+  background: rgba(138, 106, 31, 0.08);
+  color: var(--ui-warning);
+  border: 1px solid rgba(138, 106, 31, 0.2);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+  color: var(--ui-primary);
+}
+
+/* ---------- 按钮（Avalon primary/secondary，compact 基准 32px） ---------- */
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.primary-button {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: #fff;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--ui-primary-hover);
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+}
+
+.secondary-button {
+  border-color: var(--ui-border);
+  background: var(--ui-panel);
+  color: var(--ui-text);
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: var(--ui-hover);
+}
+
+.secondary-button:disabled {
+  opacity: 0.5;
+}
+
+/* ---------- 表单 ---------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.field-label {
+  font-size: 13px;
+  color: var(--ui-text);
+}
+
+.field-hint {
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.input,
+select.input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel);
+  color: var(--ui-text);
+}
+
+.input::placeholder {
+  color: var(--ui-faint);
+}
+
+.input:disabled,
+.input[readonly] {
+  background: var(--ui-panel-subtle);
+  color: var(--ui-muted);
+}
+
+.input.mono {
+  font-family: var(--ui-font-mono);
+  font-size: 12px;
+}
+
+/* 只读输入 + 按钮 的行（目录选择） */
+.path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.path-row .secondary-button {
+  white-space: nowrap;
+}
+
+.path-preview {
+  margin: 8px 0 0;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.path-preview code {
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+  color: var(--ui-text);
+  background: var(--ui-panel-subtle);
+  border-radius: 4px;
+  padding: 1px 5px;
+  word-break: break-all;
+}
+
+/* 单选行（创建/使用已有） */
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel);
+  cursor: pointer;
+}
+
+.radio-row:hover {
+  background: var(--ui-hover);
+}
+
+.radio-row.active {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary-soft);
+}
+
+.radio-row input[type='radio'] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--ui-primary);
+  cursor: pointer;
+}
+
+.radio-row-label {
+  font-weight: 500;
+}
+
+.radio-row-hint {
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+/* ---------- 弹窗（Avalon modal-backdrop + modal-dialog） ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: grid;
+  place-items: center;
+  background: rgba(12, 28, 48, 0.38);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.modal-dialog {
+  width: min(560px, calc(100vw - 36px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(15, 47, 82, 0.26);
+}
+
+.modal-dialog h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.modal-lead {
+  margin: 0 0 16px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* ---------- 列表行（Avalon list-row table 变体） ---------- */
+
+.list-row-table-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding: 0 12px;
+  color: var(--ui-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.list-row-table-header.with-menu {
+  padding-right: 36px;
+}
+
+.list-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.list-row:hover {
+  background: var(--ui-hover);
+}
+
+.list-row.active {
+  background: var(--ui-active);
+}
+
+.list-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ui-text);
+}
+
+.list-row-main:disabled {
+  cursor: default;
+}
+
+.list-row-col-created {
+  flex: 0 0 auto;
+  min-width: 76px;
+  color: var(--ui-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.list-row-col-title {
+  min-width: 0;
+  flex: 1 1 160px;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.list-row-col-count {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: center;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.list-row-col-count.empty {
+  color: var(--ui-faint);
+}
+
+.list-row-col-meta {
+  flex: 0 0 auto;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--ui-faint);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.list-row-col-status {
+  flex: 0 0 auto;
+  min-width: 52px;
+}
+
+.list-row-chip {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 行 ⋯ 菜单（Avalon list-row menu） */
+.list-row-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-right: 4px;
+}
+
+.list-row-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+}
+
+.list-row-menu-trigger:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ui-text);
+}
+
+.list-row-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 112px;
+  padding: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.list-row-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ui-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.list-row-menu button:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.list-row-menu button.danger {
+  color: #c0392b;
+}
+
+.list-row-menu button:disabled {
+  opacity: 0.45;
+}
+
+/* ---------- 目录选择器（Avalon showPathPickerModal 的 React 化） ---------- */
+
+.dir-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dir-picker-input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel);
+  font-family: var(--ui-font-mono);
+  font-size: 12px;
+  color: var(--ui-text);
+}
+
+.dir-picker-input:focus {
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.dir-picker-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dir-picker-toolbar .secondary-button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.dir-picker-mkdir {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dir-picker-mkdir input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel);
+}
+
+.dir-picker-list {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-panel);
+}
+
+.dir-picker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.dir-picker-row:last-child {
+  border-bottom: none;
+}
+
+.dir-picker-row:hover {
+  background: var(--ui-hover);
+}
+
+.dir-picker-row-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.dir-picker-row-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ui-faint);
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+
+.dir-picker-empty {
+  padding: 14px 12px;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.dir-picker-status {
+  min-height: 1.4em;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.dir-picker-status.error {
+  color: var(--ui-danger);
+}
+
+/* ---------- 空态 / 提示（Avalon task-home-empty / error / notice） ---------- */
+
+.flow-empty {
+  padding: 48px 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-panel);
+  text-align: center;
+}
+
+.flow-empty h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.flow-empty p {
+  margin: 0 0 14px;
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.flow-empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.flow-error {
+  padding: 10px 12px;
+  margin-top: 12px;
+  border-radius: var(--ui-radius-sm);
+  background: rgba(196, 61, 72, 0.07);
+  color: var(--ui-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.flow-notice {
+  padding: 10px 12px;
+  margin-top: 12px;
+  border-radius: var(--ui-radius-sm);
+  background: rgba(42, 143, 86, 0.08);
+  color: var(--ui-success);
+  font-size: 12px;
+}
+
+/* 占位页（未交付模块） */
+.flow-placeholder {
+  padding: 80px 20px;
+  text-align: center;
+}
+
+.flow-placeholder h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.flow-placeholder p {
+  margin: 0 auto;
+  max-width: 420px;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 文件表（任务详情页） */
+.file-row-cols {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.file-row-cols .list-row-col-title {
+  flex: 1 1 160px;
+  font-weight: 500;
+  font-family: var(--ui-font-mono);
+  font-size: 12px;
+}
+
+.file-row-cols .list-row-col-count {
+  min-width: 64px;
+}
+
+.file-row-cols .list-row-col-updated {
+  flex: 0 0 auto;
+  width: 150px;
+  color: var(--ui-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.list-row-col-updated {
+  flex: 0 0 auto;
+  width: 150px;
+}
+
+.file-col-status {
+  flex: 0 0 auto;
+  width: 72px;
+}

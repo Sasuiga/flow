@@ -63,8 +63,8 @@ function HeaderInput({
   onChange,
   placeholder,
 }: {
-  value: string;
-  onChange: (v: string) => void;
+  value?: string;
+  onChange?: (v: string) => void;
   placeholder?: string;
 }) {
   const [show, setShow] = useState(false);
@@ -76,7 +76,7 @@ function HeaderInput({
         value={value}
         placeholder={placeholder ?? '例如 Authorization: Bearer sk-xxx'}
         spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange?.(e.target.value)}
       />
       <Button type="default" onClick={() => setShow((s) => !s)} title={show ? '隐藏' : '显示'}>
         {show ? <EyeInvisibleOutlined /> : <EyeOutlined />}
@@ -197,7 +197,7 @@ export default function SettingsPage() {
     }
     setSaving(true);
     try {
-      await api.putSettings({ ...llm, ...ocr } as FlowSettings);
+      await api.putSettings({ ...llm, ...ocr } as unknown as FlowSettings);
       message.success('设置已保存，立即生效');
     } catch (e) {
       message.error((e as Error).message);

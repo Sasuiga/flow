@@ -4,7 +4,9 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getSettings, saveSettings } from './settings.js';
 import { probeLLM, probeOCR, fetchLLMModels } from './ai.js';
-import { projectsRouter } from './projects.js';
+import { clientsRouter } from './clients.js';
+import { projectsRouter, tasksRouter } from './projects.js';
+import { fsRouter } from './fs.js';
 import { Settings } from '@flow/shared';
 
 const app = express();
@@ -50,6 +52,9 @@ app.post('/api/llm/models', async (req, res) => {
 });
 
 app.use('/api/projects', projectsRouter);
+app.use('/api/tasks', tasksRouter);
+app.use('/api/clients', clientsRouter);
+app.use('/api/fs', fsRouter);
 
 /* Web 静态资源：兼容仓库布局（dev/dist）与 zip 绿色包布局 */
 const distCandidates = [
@@ -70,5 +75,5 @@ if (dist) {
 
 const port = Number(process.env.PORT || 4120);
 app.listen(port, () => {
-  console.log(`[flow] http://localhost:${port}  (web dist: ${existsSync(dist) ? '已加载' : '未构建，dev 模式请用 vite :5173'})`);
+  console.log(`[flow] http://localhost:${port}  (web dist: ${existsSync(dist ?? '') ? '已加载' : '未构建，dev 模式请用 vite :5173'})`);
 });

@@ -1,91 +1,110 @@
 import { Router } from 'express';
-import path from 'node:path';
-import { readdirSync, statSync } from 'node:fs';
 import { db } from './db.js';
-import { Project } from '@flow/shared';
-
-export const projectsRouter = Router();
+import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfFiles } from './fsutil.js';
+import { toProjectView } from './clients.js';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, ProjectBrief, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
-/** 扫描项目文件夹下的 PDF（递归），登记新文件，返回新增数量 */
-function scanProjectFiles(p: Project): number {
+function taskCounts(taskId: number) {
+  const fileCount = (db.prepare('SELECT COUNT(*) AS c FROM files WHERE task_id = ?').get(taskId) as { c: number }).c;
+  const txCount = (
+    db.prepare('SELECT COALESCE(SUM(tx_count), 0) AS c FROM files WHERE task_id = ?').get(taskId) as { c: number }
+  ).c;
+  return { fileCount, txCount };
+}
+
+export function toTaskView(row: Record<string, unknown>): TaskView {
+  const id = Number(row.id);
+  return {
+    id,
+    projectId: Number(row.project_id),
+    name: row.name as string,
+    folderPath: row.folder_path as string,
+    status: row.status as FlowTask['status'],
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    dirMissing: !dirExists(row.folder_path as string),
+    ...taskCounts(id),
+  };
+}
+
+function toBankFile(row: Record<string, unknown>): BankFile {
+  return {
+    id: Number(row.id),
+    taskId: Number(row.task_id),
+    relPath: row.rel_path as string,
+    bank: (row.bank as string | undefined) ?? undefined,
+    accountNo: (row.account_no as string | undefined) ?? undefined,
+    accountName: (row.account_name as string | undefined) ?? undefined,
+    periodStart: (row.period_start as string | undefined) ?? undefined,
+    periodEnd: (row.period_end as string | undefined) ?? undefined,
+    status: row.status as BankFile['status'],
+    txCount: Number(row.tx_count),
+    error: (row.error as string | undefined) ?? undefined,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+/** 扫描任务目录 PDF，登记新文件（幂等），返回新增数量 */
+function refreshTaskFiles(taskId: number, folderPath: string): number {
   const ins = db.prepare(
-    `INSERT OR IGNORE INTO files(project_id, rel_path, status, updated_at) VALUES(?, ?, 'scanned', ?)`,
+    `INSERT OR IGNORE INTO files(task_id, rel_path, status, updated_at) VALUES(?, ?, 'scanned', ?)`,
   );
   let added = 0;
-  try {
-    const walk = (dir: string, prefix: string): void => {
-      for (const name of readdirSync(dir)) {
-        const full = path.join(dir, name);
-        const rel = prefix ? `${prefix}/${name}` : name;
-        let st;
-        try {
-          st = statSync(full);
-        } catch {
-          continue;
-        }
-        if (st.isDirectory()) walk(full, rel);
-        else if (/\.pdf$/i.test(name)) {
-          const r = ins.run(p.id, rel, now());
-          if (r.changes > 0) added++;
-        }
-      }
-    };
-    walk(p.folderPath, '');
-  } catch {
-    /* 文件夹尚不存在等情况，稍后再扫 */
+  for (const rel of scanPdfFiles(folderPath)) {
+    const r = ins.run(taskId, rel, now());
+    if (r.changes > 0) added++;
   }
   return added;
 }
 
-/** 获取项目并刷新文件清单（幂等） */
-export function refreshProject(id: number): Project {
-  const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as unknown as Project;
-  if (!p) throw new Error('project not found');
-  const added = scanProjectFiles(p);
-  db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(now(), id);
-  return { ...p, updatedAt: now(), ...( { added } as object) } as Project;
-}
+export const projectsRouter = Router();
 
-projectsRouter.get('/', (_req, res) => {
-  const projects = db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all() as unknown as Project[];
-  const stats = db
-    .prepare('SELECT project_id, COUNT(*) AS c, COALESCE(SUM(tx_count), 0) AS tx FROM files GROUP BY project_id')
-    .all() as { project_id: number; c: number; tx: number }[];
-  const map = new Map(stats.map((r) => [r.project_id, r]));
-  res.json(
-    projects.map((p) => ({
-      ...p,
-      fileCount: map.get(p.id)?.c ?? 0,
-      txCount: map.get(p.id)?.tx ?? 0,
-    })),
-  );
+projectsRouter.get('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: '项目不存在' });
+  const tasks = (
+    db.prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at DESC').all(id) as Record<string, unknown>[]
+  ).map(toTaskView);
+  const clientRow = db.prepare('SELECT id, name FROM clients WHERE id = ?').get(row.client_id) as
+    | { id: number; name: string }
+    | undefined;
+  const client: ClientBrief = clientRow
+    ? { id: Number(clientRow.id), name: clientRow.name }
+    : { id: Number(row.client_id), name: '未知客户' };
+  res.json({ project: toProjectView(row), client, tasks });
 });
 
-projectsRouter.post('/', (req, res) => {
-  const { name, folderPath } = req.body as { name?: string; folderPath?: string };
-  if (!name || !folderPath) return res.status(400).json({ error: 'name 与 folderPath 必填' });
+/** 在项目下新建报告期任务（目录默认创建在项目目录内） */
+projectsRouter.post('/:id/tasks', (req, res) => {
+  const projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(Number(req.params.id)) as
+    | Record<string, unknown>
+    | undefined;
+  if (!projectRow) return res.status(404).json({ error: '项目不存在' });
+  const body = req.body as CreateEntityInput;
+  const name = (body?.name ?? '').trim();
+  if (!name || !body?.location) return res.status(400).json({ error: 'name 与 location 必填' });
   try {
+    const folderPath = resolveEntityLocation(body.location, name, 'task');
     const r = db
-      .prepare('INSERT INTO projects(name, folder_path, created_at, updated_at) VALUES(?,?,?,?)')
-      .run(name, folderPath, now(), now());
-    const p = { id: Number(r.lastInsertRowid), name, folderPath, createdAt: now(), updatedAt: now() } as Project;
-    const added = scanProjectFiles(p);
-    res.json({ ...p, added });
+      .prepare(
+        'INSERT INTO tasks(project_id, name, folder_path, status, created_at, updated_at) VALUES(?,?,?,?,?,?)',
+      )
+      .run(Number(projectRow.id), name, folderPath, 'active', now(), now());
+    res.json(toTaskView(db.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(r.lastInsertRowid)) as Record<string, unknown>));
   } catch (e) {
-    res.status(409).json({ error: (e as Error).message });
+    res.status(409).json({ error: friendlyFsError(e).message });
   }
 });
 
-projectsRouter.post('/:id/refresh', (req, res) => {
-  try {
-    const p = refreshProject(Number(req.params.id));
-    const added = (p as unknown as { added?: number }).added ?? 0;
-    res.json({ ok: true, added });
-  } catch (e) {
-    res.status(404).json({ error: (e as Error).message });
-  }
+projectsRouter.post('/:id/open', (req, res) => {
+  const row = db.prepare('SELECT folder_path FROM projects WHERE id = ?').get(Number(req.params.id)) as
+    | { folder_path: string }
+    | undefined;
+  if (!row) return res.status(404).json({ error: '项目不存在' });
+  res.json({ ok: openFolder(row.folder_path) });
 });
 
 projectsRouter.delete('/:id', (req, res) => {
@@ -93,9 +112,47 @@ projectsRouter.delete('/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-projectsRouter.get('/:id/files', (req, res) => {
-  const rows = db
-    .prepare('SELECT * FROM files WHERE project_id = ? ORDER BY updated_at DESC')
-    .all(req.params.id) as Record<string, unknown>[];
-  res.json(rows);
+/* ---------- 任务路由（挂在 /api/tasks 下，由 main.ts 单独 mount） ---------- */
+
+export const tasksRouter = Router();
+
+tasksRouter.get('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: '任务不存在' });
+  const projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(row.project_id) as Record<string, unknown> | undefined;
+  const clientRow = projectRow
+    ? (db.prepare('SELECT id, name FROM clients WHERE id = ?').get(projectRow.client_id) as { id: number; name: string } | undefined)
+    : undefined;
+  const files = (
+    db.prepare('SELECT * FROM files WHERE task_id = ? ORDER BY rel_path').all(id) as Record<string, unknown>[]
+  ).map(toBankFile);
+  const project: ProjectBrief = projectRow
+    ? { id: Number(projectRow.id), name: projectRow.name as string, taskCount: 0 }
+    : { id: Number(row.project_id), name: '未知项目', taskCount: 0 };
+  const client: ClientBrief = clientRow ? { id: Number(clientRow.id), name: clientRow.name } : { id: 0, name: '未知客户' };
+  res.json({ task: toTaskView(row), project, client, files });
+});
+
+/** 重新扫描任务目录 PDF（放入新文件后调用，幂等） */
+tasksRouter.post('/:id/refresh', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  if (!row) return res.status(404).json({ error: '任务不存在' });
+  const added = refreshTaskFiles(id, row.folder_path as string);
+  db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(now(), id);
+  res.json({ ok: true, added });
+});
+
+tasksRouter.post('/:id/open', (req, res) => {
+  const row = db.prepare('SELECT folder_path FROM tasks WHERE id = ?').get(Number(req.params.id)) as
+    | { folder_path: string }
+    | undefined;
+  if (!row) return res.status(404).json({ error: '任务不存在' });
+  res.json({ ok: openFolder(row.folder_path) });
+});
+
+tasksRouter.delete('/:id', (req, res) => {
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
