@@ -4,7 +4,7 @@ import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfF
 import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
 import { syncTaskWatchers } from './watch.js';
-import { BankFile, ClientBrief, CreateEntityInput, FlowTask, ProjectBrief, TaskView } from '@flow/shared';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, ParseStep, ProjectBrief, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
@@ -31,6 +31,16 @@ export function toTaskView(row: Record<string, unknown>): TaskView {
   };
 }
 
+function parseProgress(raw: unknown): ParseStep[] | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  try {
+    const v = JSON.parse(raw) as ParseStep[];
+    return Array.isArray(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function toBankFile(row: Record<string, unknown>): BankFile {
   return {
     id: Number(row.id),
@@ -44,6 +54,7 @@ function toBankFile(row: Record<string, unknown>): BankFile {
     status: row.status as BankFile['status'],
     txCount: Number(row.tx_count),
     error: (row.error as string | undefined) ?? undefined,
+    progress: parseProgress(row.progress),
     updatedAt: row.updated_at as string,
   };
 }

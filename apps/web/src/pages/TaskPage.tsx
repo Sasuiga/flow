@@ -1,6 +1,6 @@
-import { ChevronRight, Play, RefreshCw, ScrollText, Trash2 } from 'lucide-react';
+import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, ScrollText, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BankFile, FileStatus } from '@flow/shared';
+import { BankFile, FileStatus, ParseStep } from '@flow/shared';
 import { api, TaskDetail } from '../api';
 import { ListRow, ListRowHeader } from '../components/ListRow';
 import { confirmDialog } from '../lib/confirm';
@@ -55,7 +55,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
       timerRef.current = null;
     }
     if (anyParsing) {
-      timerRef.current = setInterval(() => void load(), 4000);
+      timerRef.current = setInterval(() => void load(), 2000);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -285,9 +285,51 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
                 </div>
               );
             })}
+            <ParseBoards files={detail.files} />
           </>
         )
       ) : null}
     </div>
   );
+}
+
+function ParseBoards({ files }: { files: BankFile[] }) {
+  const shown = files.filter((f) => f.status === 'parsing' || (f.status === 'error' && (f.progress?.length ?? 0) > 0));
+  if (shown.length === 0) return null;
+  return (
+    <div className="parse-board">
+      {shown.map((f) => {
+        const steps: ParseStep[] =
+          f.progress && f.progress.length > 0
+            ? f.progress
+            : [{ id: 'read', label: '读取 PDF', state: 'run', detail: '正在开始' }];
+        const current = steps.find((s) => s.state === 'run' || s.state === 'fail');
+        return (
+          <section key={f.id} className="parse-card">
+            <header className="parse-card-head">
+              <span className="parse-card-file">{f.relPath}</span>
+              <span className="parse-card-now">{current ? `${current.label}${current.detail ? ` · ${current.detail}` : ''}` : '处理中'}</span>
+            </header>
+            <ol className="parse-steps">
+              {steps.map((step) => (
+                <li key={step.id} className={`parse-step ${step.state}`}>
+                  <span className="parse-mark">{stepMark(step.state)}</span>
+                  <span className="parse-label">{step.label}</span>
+                  {step.detail ? <span className="parse-detail">{step.detail}</span> : null}
+                </li>
+              ))}
+            </ol>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function stepMark(state: ParseStep['state']) {
+  if (state === 'run') return <Loader2 size={14} className="spin" />;
+  if (state === 'done') return <Check size={14} />;
+  if (state === 'fail') return <X size={14} />;
+  if (state === 'skip') return <Minus size={14} />;
+  return <span className="parse-dot" />;
 }

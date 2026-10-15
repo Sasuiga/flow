@@ -113,8 +113,11 @@ export function rebuildLines(items: Array<{ str: string; transform: number[]; wi
   });
 }
 
-/** 提取 PDF 全部页的文字层 → 布局保真行；返回每页行 + 字符数 */
-export async function extractTextLines(pdfPath: string): Promise<PageLines[]> {
+/** 提取 PDF 全部页的文字层 → 布局保真行；onPage 用来把「读到第几页」写进进度 */
+export async function extractTextLines(
+  pdfPath: string,
+  onPage?: (done: number, total: number) => void,
+): Promise<PageLines[]> {
   const pdfjs = await loadPdfjs();
   const bytes = await readFile(pdfPath);
   const urls = pdfjsResourceUrls();
@@ -129,12 +132,15 @@ export async function extractTextLines(pdfPath: string): Promise<PageLines[]> {
   } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
   const doc = await task.promise;
   const out: PageLines[] = [];
+  const total = doc.numPages;
+  onPage?.(0, total);
   try {
-    for (let p = 1; p <= doc.numPages; p++) {
+    for (let p = 1; p <= total; p++) {
       const page = await doc.getPage(p);
       const content = await page.getTextContent();
       const lines = rebuildLines(content.items as Array<{ str: string; transform: number[]; width: number; height: number }>);
       out.push({ lines, chars: lines.join('\n').length });
+      onPage?.(p, total);
     }
   } finally {
     await task.destroy();
@@ -386,6 +392,35 @@ function setFile(fileId: number, patch: Record<string, unknown>): void {
   db.prepare(`UPDATE files SET ${sets}, updated_at = ? WHERE id = ?`).run(...vals, now(), fileId);
 }
 
+/** 解析过程写在 files.progress，任务页轮询展示。只描述正在做的事，不改交易内容。 */
+const PARSE_STEPS = [
+  ['read', '读取 PDF'],
+  ['detect', '判断文字稿还是扫描件'],
+  ['text', '提取文字'],
+  ['render', '渲染页面图像'],
+  ['ocr', 'OCR 识别'],
+  ['structure', '逐页抽取交易'],
+  ['balance', '余额复核'],
+  ['save', '写入交易'],
+] as const;
+
+type ParseStepId = (typeof PARSE_STEPS)[number][0];
+type ParseStepState = 'wait' | 'run' | 'done' | 'skip' | 'fail';
+
+class ParseProgress {
+  private steps: Array<{ id: ParseStepId; label: string; state: ParseStepState; detail?: string }>;
+  constructor(private fileId: number) {
+    this.steps = PARSE_STEPS.map(([id, label]) => ({ id, label, state: 'wait' }));
+  }
+  set(id: ParseStepId, state: ParseStepState, detail?: string): void {
+    const step = this.steps.find((s) => s.id === id);
+    if (!step) return;
+    step.state = state;
+    step.detail = detail;
+    setFile(this.fileId, { progress: JSON.stringify(this.steps) });
+  }
+}
+
 /** 解析单个文件（文字层通道）。调用方负责状态置 parsing 与并发控制 */
 export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> {
   const file = db.prepare('SELECT * FROM files WHERE id = ?').get(fileId) as Record<string, unknown> | undefined;
@@ -395,56 +430,85 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
     | undefined;
   if (!task) throw new Error('任务不存在');
   const absPath = path.resolve(task.folder_path, String(file.rel_path));
+  const prog = new ParseProgress(fileId);
 
-  // 1) 文字层提取 + 行重建
+  // 1) 读取 + 文字层。读的过程中按页回报，避免长时间没有任何动静。
   let pages: PageLines[];
+  prog.set('read', 'run', '打开文件');
   try {
-    pages = await extractTextLines(absPath);
+    pages = await extractTextLines(absPath, (done, total) => {
+      prog.set('read', 'run', total > 0 ? `已读取 ${done}/${total} 页` : '打开文件');
+    });
   } catch (e) {
-    return finishError(fileId, `PDF 读取失败：${(e as Error).message}`);
+    const msg = `PDF 读取失败：${(e as Error).message}`;
+    prog.set('read', 'fail', msg);
+    return finishError(fileId, msg);
   }
-  if (pages.length === 0) return finishError(fileId, 'PDF 无页面');
+  if (pages.length === 0) {
+    prog.set('read', 'fail', 'PDF 无页面');
+    return finishError(fileId, 'PDF 无页面');
+  }
+  prog.set('read', 'done', `${pages.length} 页`);
+
   const totalChars = pages.reduce((s, p) => s + p.chars, 0);
+  prog.set('detect', 'run', '查看有没有可选中的文字');
   if (totalChars < 20) {
-    return finishError(fileId, '文字层缺失（疑似扫描件），M3 接入 OCR 通道后自动解析');
+    prog.set('detect', 'done', '几乎没有文字，按扫描件处理');
+    prog.set('text', 'skip', '没有可提取的文字');
+    prog.set('render', 'skip', '扫描件渲染还没接入');
+    prog.set('ocr', 'fail', 'OCR 通道还没接入，本次停在这里');
+    return finishError(fileId, '文字层缺失（疑似扫描件），OCR 通道接入后会从这里继续');
   }
+  prog.set('detect', 'done', '文字稿，直接读文字层');
+  prog.set('text', 'done', `${pages.length} 页，约 ${totalChars.toLocaleString('zh-CN')} 字`);
+  prog.set('render', 'skip', '文字稿不需要渲染');
+  prog.set('ocr', 'skip', '文字稿不需要 OCR');
 
   // 2) LLM 结构化（≤3 页/批，上批末 3 行衔接）
   const s = getSettings();
-  const pagesMeta: Array<{ p: number; lines: string[] }> = [];
   const all: NormTx[] = [];
   let meta: Partial<StructuredBatch> = {};
   let prevTail: string | undefined;
-  for (let i = 0; i < pages.length; i += BATCH_PAGES) {
-    const blockPages = pages
-      .slice(i, i + BATCH_PAGES)
-      .map((pl, k) => ({ p: i + k + 1, lines: pl.lines }));
-    const r = await structureBatch(s, String(file.rel_path), blockPages, pages.length, prevTail);
-    if (r.bank) meta.bank = r.bank;
-    if (r.accountNo) meta.accountNo = r.accountNo;
-    if (r.accountName) meta.accountName = r.accountName;
-    if (r.periodStart) meta.periodStart = r.periodStart;
-    if (r.periodEnd) meta.periodEnd = r.periodEnd;
-    all.push(...r.txs);
-    // 上批末 3 行：最后 3 笔交易的原始行文本
-    const last3 = r.txs.slice(-3);
-    prevTail = last3.length
-      ? last3
-          .map((t) => {
-            const pl = pages[t.page - 1];
-            const raw = pl && t.lineNo >= 1 && t.lineNo <= pl.lines.length ? pl.lines[t.lineNo - 1] : undefined;
-            return raw ? `[p${t.page} 行${t.lineNo}] ${raw.trim()}` : null;
-          })
-          .filter(Boolean)
-          .join('\n')
-      : undefined;
+  try {
+    for (let i = 0; i < pages.length; i += BATCH_PAGES) {
+      const end = Math.min(pages.length, i + BATCH_PAGES);
+      prog.set('structure', 'run', `第 ${i + 1}–${end} / ${pages.length} 页，已抽出 ${all.length} 笔`);
+      const blockPages = pages.slice(i, i + BATCH_PAGES).map((pl, k) => ({ p: i + k + 1, lines: pl.lines }));
+      const r = await structureBatch(s, String(file.rel_path), blockPages, pages.length, prevTail);
+      if (r.bank) meta.bank = r.bank;
+      if (r.accountNo) meta.accountNo = r.accountNo;
+      if (r.accountName) meta.accountName = r.accountName;
+      if (r.periodStart) meta.periodStart = r.periodStart;
+      if (r.periodEnd) meta.periodEnd = r.periodEnd;
+      all.push(...r.txs);
+      const last3 = r.txs.slice(-3);
+      prevTail = last3.length
+        ? last3
+            .map((t) => {
+              const pl = pages[t.page - 1];
+              const raw = pl && t.lineNo >= 1 && t.lineNo <= pl.lines.length ? pl.lines[t.lineNo - 1] : undefined;
+              return raw ? `[p${t.page} 行${t.lineNo}] ${raw.trim()}` : null;
+            })
+            .filter(Boolean)
+            .join('\n')
+        : undefined;
+      prog.set('structure', 'run', `第 ${i + 1}–${end} / ${pages.length} 页完成，已抽出 ${all.length} 笔`);
+    }
+  } catch (e) {
+    const msg = (e as Error).message;
+    prog.set('structure', 'fail', msg);
+    return finishError(fileId, msg);
   }
+  prog.set('structure', 'done', `共 ${all.length} 笔`);
 
   // 3) 余额连续性（M3 §5.5）：只追加复核提示，不改金额/方向/余额/日期。
-  // 复算顺序 = 流水印刷顺序（页、行）。按日期重排会打乱同日多笔，和原文对不上。
+  prog.set('balance', 'run', '按印刷顺序核对，不改原数字');
   annotateBalanceReviews(all);
+  const breaks = all.filter((t) => t.review.includes('余额断裂')).length;
+  prog.set('balance', 'done', breaks > 0 ? `${breaks} 笔对不上，只记复核提示` : '余额连续');
 
   // 4) 入库（重解析先清旧数据）+ 质检标记
+  prog.set('save', 'run', `写入 ${all.length} 笔`);
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ?)').run(fileId);
     db.prepare('DELETE FROM transactions WHERE file_id = ?').run(fileId);
@@ -491,6 +555,8 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
   if (!file.period_start && meta.periodStart) patch.period_start = meta.periodStart;
   if (!file.period_end && meta.periodEnd) patch.period_end = meta.periodEnd;
   patch.status = reviewCount > 0 ? 'needs_review' : 'done';
+  patch.progress = null;
+  prog.set('save', 'done', reviewCount > 0 ? `${all.length} 笔，其中 ${reviewCount} 笔待复核` : `${all.length} 笔`);
   setFile(fileId, patch);
   return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount: all.length, reviewCount };
 }
@@ -544,7 +610,7 @@ export class ParseQueue {
     // 任务/文件可能已被删除
     const exists = db.prepare('SELECT 1 FROM files WHERE id = ?').get(fileId);
     if (!exists) return;
-    setFile(fileId, { status: 'parsing', error: null });
+    setFile(fileId, { status: 'parsing', error: null, progress: null });
     try {
       await parseFileTextLayer(fileId);
     } catch (e) {

@@ -2,6 +2,16 @@
 
 export type Direction = 'in' | 'out';
 export type FileStatus = 'scanned' | 'parsing' | 'done' | 'error' | 'needs_review';
+
+/** 解析进度一步：wait 未到 / run 进行中 / done 完成 / skip 本文件不需要 / fail 停在这里 */
+export type ParseStepState = 'wait' | 'run' | 'done' | 'skip' | 'fail';
+
+export interface ParseStep {
+  id: string;
+  label: string;
+  state: ParseStepState;
+  detail?: string;
+}
 export type TxStatus = 'ok' | 'needs_review' | 'fixed';
 export type Severity = 'high' | 'medium' | 'low';
 export type HitStatus = 'open' | 'confirmed' | 'false_positive';
@@ -141,6 +151,8 @@ export interface BankFile {
   status: FileStatus;
   txCount: number;
   error?: string;
+  /** 解析过程；完成后清空。出错时保留，用来看停在哪一步 */
+  progress?: ParseStep[];
   updatedAt: string;
 }
 

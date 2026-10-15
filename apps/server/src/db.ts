@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS files (
   status TEXT NOT NULL DEFAULT 'scanned',
   tx_count INTEGER NOT NULL DEFAULT 0,
   error TEXT,
+  progress TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(task_id, rel_path)
 );
@@ -127,6 +128,9 @@ CREATE TABLE IF NOT EXISTS settings (
 if (!tableCols('transactions').includes('review_note')) {
   db.exec('ALTER TABLE transactions ADD COLUMN review_note TEXT');
 }
+if (!tableCols('files').includes('progress')) {
+  db.exec('ALTER TABLE files ADD COLUMN progress TEXT');
+}
 
 if (!tableCols('projects').includes('client_id')) {
   db.exec('ALTER TABLE projects ADD COLUMN client_id INTEGER');
@@ -147,6 +151,7 @@ CREATE TABLE files (
   status TEXT NOT NULL DEFAULT 'scanned',
   tx_count INTEGER NOT NULL DEFAULT 0,
   error TEXT,
+  progress TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(task_id, rel_path)
 );
