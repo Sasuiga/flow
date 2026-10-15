@@ -18,6 +18,7 @@ import {
   TxOptions,
   TxPageResult,
   TxQuery,
+  TxRow,
 } from '@flow/shared';
 
 export interface LlmModelsResult {
@@ -114,4 +115,11 @@ export const api = {
     return j<TxPageResult>(`/api/transactions?${p.toString()}`);
   },
   txOptions: () => j<TxOptions>('/api/transactions/options'),
+  reviewQueue: (taskId?: number) =>
+    j<{ rows: TxRow[]; total: number }>(`/api/transactions/review${taskId ? `?taskId=${taskId}` : ''}`),
+  patchTransaction: (
+    id: number,
+    body: { date?: string; summary?: string; amount: number; direction: 'in' | 'out'; balance?: number | null; counterparty?: string },
+  ) =>
+    j<{ row: TxRow; reviewCount: number }>(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 };

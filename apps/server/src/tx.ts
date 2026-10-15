@@ -8,7 +8,7 @@
  */
 import { Router } from 'express';
 import { db } from './db.js';
-import { parseQueue, refreshTaskFilesAuto } from './parse.js';
+import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
 import { TaskListItem, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
 function toTxRow(r: Record<string, unknown>): TxRow {
@@ -54,6 +54,58 @@ JOIN projects p ON p.id = tk.project_id
 JOIN clients c ON c.id = p.client_id`;
 
 export const transactionsRouter = Router();
+
+/** 修正队列（M3）：待复核行，按流水印刷顺序。余额问题只在 reviewNote，不改交易数字。 */
+transactionsRouter.get('/review', (req, res) => {
+  const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
+  const where = ["t.status = 'needs_review'"];
+  const args: number[] = [];
+  if (taskId && Number.isFinite(taskId)) {
+    where.push('f.task_id = ?');
+    args.push(taskId);
+  }
+  const rows = db
+    .prepare(`${BASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY f.rel_path, t.page, t.line_no, t.id LIMIT 1000`)
+    .all(...args) as Record<string, unknown>[];
+  res.json({ rows: rows.map(toTxRow), total: rows.length });
+});
+
+/** 人工修正一行，然后只重算该文件的复核提示 */
+transactionsRouter.patch('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT id, file_id FROM transactions WHERE id = ?').get(id) as
+    | { id: number; file_id: number }
+    | undefined;
+  if (!existing) return res.status(404).json({ error: '交易不存在' });
+  const b = (req.body ?? {}) as {
+    date?: string | null;
+    summary?: string | null;
+    amount?: number;
+    direction?: string;
+    balance?: number | null;
+    counterparty?: string | null;
+  };
+  if (b.direction !== 'in' && b.direction !== 'out') return res.status(400).json({ error: '方向只能是收入或支出' });
+  const amount = Number(b.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金额需为大于 0 的数字' });
+  const balance =
+    b.balance == null || (typeof b.balance === 'string' && (b.balance as string) === '') ? null : Number(b.balance);
+  if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
+  db.prepare(
+    `UPDATE transactions SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ? WHERE id = ?`,
+  ).run(
+    typeof b.date === 'string' && b.date.trim() ? b.date.trim() : null,
+    typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null,
+    Math.round(amount * 100) / 100,
+    b.direction,
+    balance == null ? null : Math.round(balance * 100) / 100,
+    typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null,
+    id,
+  );
+  const reviewCount = recomputeFileBalanceReviews(existing.file_id, id);
+  const updated = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id) as Record<string, unknown>;
+  res.json({ row: toTxRow(updated), reviewCount });
+});
 
 transactionsRouter.get('/', (req, res) => {
   const q = req.query as unknown as Record<string, string | undefined>;
@@ -103,10 +155,12 @@ transactionsRouter.get('/', (req, res) => {
   const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const sort =
     q.sort === 'date_asc'
-      ? 'ORDER BY t.date IS NULL, t.date ASC, t.file_id, t.line_no'
-      : q.sort === 'amount_desc'
-        ? 'ORDER BY t.amount DESC'
-        : 'ORDER BY t.date IS NULL, t.date DESC, t.file_id DESC, t.line_no DESC';
+      ? 'ORDER BY t.date IS NULL, t.date ASC, f.rel_path, t.page, t.line_no, t.id'
+      : q.sort === 'date_desc'
+        ? 'ORDER BY t.date IS NULL, t.date DESC, f.rel_path, t.page, t.line_no, t.id'
+        : q.sort === 'amount_desc'
+          ? 'ORDER BY t.amount DESC, f.rel_path, t.page, t.line_no, t.id'
+          : 'ORDER BY f.rel_path, t.page, t.line_no, t.id';
   const page = Math.max(1, Number(q.page) || 1);
   const pageSize = Math.min(200, Math.max(10, Number(q.pageSize) || 50));
 

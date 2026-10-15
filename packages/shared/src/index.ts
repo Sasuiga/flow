@@ -240,8 +240,8 @@ export interface TxQuery {
   status?: TxStatus;
   /** 分类过滤：'__none__' = 未分类 */
   category?: string;
-  /** date_desc（默认）/ date_asc / amount_desc */
-  sort?: 'date_desc' | 'date_asc' | 'amount_desc';
+  /** date_desc / date_asc / amount_desc；缺省 stmt = 流水印刷顺序 */
+  sort?: 'stmt' | 'date_desc' | 'date_asc' | 'amount_desc';
   page?: number;
   pageSize?: number;
 }

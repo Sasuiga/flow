@@ -7,6 +7,7 @@ import { TaskPage } from './pages/TaskPage';
 import Placeholder from './pages/Placeholder';
 import SettingsPage from './pages/Settings';
 import TransactionsPage from './pages/Transactions';
+import ReviewQueue from './pages/ReviewQueue';
 import { api } from './api';
 import { TaskBrief } from '@flow/shared';
 
@@ -156,13 +157,7 @@ export default function App() {
         {view.k === 'tx' && (
           <TransactionsPage key={view.taskId ?? 'all'} initialTaskId={view.taskId} initialFileId={view.fileId} />
         )}
-        {view.k === 'review' && (
-          <Placeholder
-            name="修正队列"
-            note="余额连续性校验失败/低置信行集中修正：左侧原始页文本或页图，右侧可编辑字段，保存后自动复算。"
-            milestone="M3 交付"
-          />
-        )}
+        {view.k === 'review' && <ReviewQueue taskId={ctxTask?.id} />}
         {view.k === 'rules' && (
           <Placeholder
             name="规则"

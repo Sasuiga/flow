@@ -1293,3 +1293,43 @@ select.input {
   color: var(--ui-warning);
   font-size: 12px;
 }
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-card {
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.review-summary {
+  flex: 1;
+  min-width: 120px;
+}
+
+.review-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.review-form .input {
+  width: 140px;
+}

@@ -147,17 +147,21 @@ export async function extractTextLines(pdfPath: string): Promise<PageLines[]> {
 const BATCH_PAGES = 3;
 
 const LLM_SYSTEM = `你是银行流水结构化助手。输入是银行流水 PDF 的布局保真文本（每页若干行，行首是行号，列之间用制表符分隔）。
-请逐笔抽取交易并输出严格 JSON（不要代码块、不要解释）：
+请按页面从上到下的顺序逐笔抽取，输出严格 JSON（不要代码块、不要解释）：
 {"bank":"银行名或null","account_no":"账号纯数字或null","account_name":"户名或null","period_start":"YYYY-MM-DD或null","period_end":"YYYY-MM-DD或null",
 "transactions":[{"page":1,"line_no":N,"date":"YYYY-MM-DD","summary":"摘要","amount":123.45,"direction":"in","balance":123.45,
 "counterparty":"对方户名或null","counterparty_account":"对方账号或null","channel":"渠道或null","confidence":0.95}]}
-规则：
-- 每一笔交易对应一条；表头行、“本页合计/上页余额结转”等非交易行不出现在 transactions 中。
+规则（照抄原文，禁止用余额反推）：
+- 每一行交易原样输出一条，顺序与该页从上到下一致。不要合并、拆分，不要为了让余额连续而增删行或改数字。
+- 支出列有数字 → direction="out"，amount=支出列印出的数字（正数，去掉千分位）。
+- 收入列有数字 → direction="in"，amount=收入列印出的数字（正数）。
+- 禁止用「余额相对上一行的增减」反推金额或方向。即使余额对不上，也要照抄该行的支出、收入和余额。
+- balance 只填该行印出的余额，没有则 null。禁止用上期余额±金额去填写或改写余额。
+- 日期、摘要、对方户名、对方账号只从该行抄。日期统一 YYYY-MM-DD。
+- 表头、本页合计、上页结转、承前余额等非交易行不要输出。
 - line_no = 该交易在对应页布局文本中的行号（行首编号，1 起）。
-- amount 恒为正数（去掉千分位逗号）。
-- direction 判定（in=收入，out=支出）：优先看该笔的 balance 相对上一行的变化——balance 变大=in、变小=out；若页面有「借贷/收付/方向」列则照抄该列；两者冲突时以 balance 增减为准并把 confidence 降到 0.7 以下。
-- balance = 该行对应的账户余额（无则 null）；日期统一 YYYY-MM-DD。
-- 无法确定的字段填 null，并把该笔 confidence 降到 0.6 以下；页眉的银行/账号/户名/期间填进顶层字段。`;
+- 看不清支出/收入列时：amount 仍填该行能看到的金额，direction 选更接近原文的一侧，confidence 降到 0.5 以下。不要编造一个能对上余额的数字。
+- 页眉的银行/账号/户名/期间填进顶层字段。`;
 
 function pageBlock(fileRel: string, p: number, total: number, lines: string[], firstLineNo: number): string {
   const body = lines.map((l, i) => `${firstLineNo + i}: ${l}`.trimEnd()).join('\n');
@@ -195,6 +199,88 @@ function cleanStr(v: unknown): string | undefined {
   const s = v.trim().replace(/\s+/g, ' ');
   if (!s || /^(null|none|n\/a|-{1,3}|未知)$/i.test(s)) return undefined;
   return s;
+}
+
+/** 去掉旧的余额断裂提示，保留日期/置信度等其它复核原因 */
+export function stripBalanceNote(note: string): string {
+  return note
+    .split('；')
+    .map((s) => s.trim())
+    .filter((s) => s && !s.startsWith('余额断裂'))
+    .join('；');
+}
+
+/** 上一行印出的余额 ± 本行印出的金额，与本行印出的余额比较。不改任何交易字段。 */
+export function balanceGapNote(
+  prevBalance: number,
+  direction: 'in' | 'out',
+  amount: number,
+  balance: number,
+): string | null {
+  const expected = Math.round((prevBalance + (direction === 'in' ? amount : -amount)) * 100) / 100;
+  const shown = Math.round(balance * 100) / 100;
+  if (Math.abs(expected - shown) > 0.01) {
+    return `余额断裂(复算 ${expected.toFixed(2)} ≠ 显示 ${shown.toFixed(2)})`;
+  }
+  return null;
+}
+
+/** 按流水印刷顺序标注余额断裂。只改 review 文本。 */
+export function annotateBalanceReviews(txs: NormTx[]): void {
+  const ordered = [...txs].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
+  let prev: number | undefined;
+  for (const t of ordered) {
+    t.review = stripBalanceNote(t.review);
+    if (prev != null && t.balance != null) {
+      const note = balanceGapNote(prev, t.direction, t.amount, t.balance);
+      if (note) t.review = t.review ? `${t.review}；${note}` : note;
+    }
+    if (t.balance != null) prev = t.balance;
+  }
+}
+
+/**
+ * 人工改完一行后，按印刷顺序重算该文件的复核提示（M3：修正后复算）。
+ * 只更新 review_note / status，不回写金额、方向、余额、日期。
+ * editedId：这次人工保存的行；复算通过则标 fixed。
+ */
+export function recomputeFileBalanceReviews(fileId: number, editedId?: number): number {
+  const rows = db
+    .prepare(
+      `SELECT id, page, line_no, amount, direction, balance, review_note, status
+       FROM transactions WHERE file_id = ? ORDER BY page, line_no, id`,
+    )
+    .all(fileId) as Array<{
+    id: number;
+    page: number;
+    line_no: number;
+    amount: number;
+    direction: 'in' | 'out';
+    balance: number | null;
+    review_note: string | null;
+    status: string;
+  }>;
+  const upd = db.prepare('UPDATE transactions SET review_note = ?, status = ? WHERE id = ?');
+  let prev: number | undefined;
+  let reviewCount = 0;
+  const apply = db.transaction(() => {
+    for (const r of rows) {
+      let note = stripBalanceNote(r.review_note ?? '');
+      if (prev != null && r.balance != null) {
+        const gap = balanceGapNote(prev, r.direction, Number(r.amount), Number(r.balance));
+        if (gap) note = note ? `${note}；${gap}` : gap;
+      }
+      if (r.balance != null) prev = Number(r.balance);
+      const status = note ? 'needs_review' : r.id === editedId || r.status === 'fixed' ? 'fixed' : 'ok';
+      if (note) reviewCount++;
+      upd.run(note || null, status, r.id);
+    }
+    db.prepare(
+      `UPDATE files SET status = ?, updated_at = ? WHERE id = ? AND status IN ('done','needs_review')`,
+    ).run(reviewCount > 0 ? 'needs_review' : 'done', new Date().toISOString(), fileId);
+  });
+  apply();
+  return reviewCount;
 }
 
 function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
@@ -354,18 +440,9 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
       : undefined;
   }
 
-  // 3) 余额连续性初检（§5.5 轻量版：按页内行序复算，断裂→该行标复核；M3 做完整校验+修正队列）
-  const ordered = [...all].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
-  let prev: NormTx | undefined;
-  for (const t of ordered) {
-    if (prev && prev.balance != null && t.balance != null) {
-      const expected = prev.balance + (t.direction === 'in' ? t.amount : -t.amount);
-      if (Math.abs(expected - t.balance) > 0.01) {
-        t.review = t.review ? `${t.review}；余额断裂(复算 ${expected.toFixed(2)} ≠ 显示 ${t.balance.toFixed(2)})` : `余额断裂(复算 ${expected.toFixed(2)} ≠ 显示 ${t.balance.toFixed(2)})`;
-      }
-    }
-    prev = t;
-  }
+  // 3) 余额连续性（M3 §5.5）：只追加复核提示，不改金额/方向/余额/日期。
+  // 复算顺序 = 流水印刷顺序（页、行）。按日期重排会打乱同日多笔，和原文对不上。
+  annotateBalanceReviews(all);
 
   // 4) 入库（重解析先清旧数据）+ 质检标记
   const tx = db.transaction(() => {
@@ -377,7 +454,8 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     let reviewCount = 0;
-    for (const t of all) {
+    const inOrder = [...all].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
+    for (const t of inOrder) {
       const pl = pages[t.page - 1];
       const raw = pl && t.lineNo >= 1 && t.lineNo <= pl.lines.length ? pl.lines[t.lineNo - 1]?.trim() : undefined;
       if (!raw && !t.review) t.review = '行号越界（对不上原始行）';

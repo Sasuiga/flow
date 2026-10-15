@@ -30,7 +30,7 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
   const [query, setQuery] = useState<TxQuery>({
     taskId: initialTaskId,
     fileId: initialFileId,
-    sort: 'date_desc',
+    sort: 'stmt',
     page: 1,
     pageSize: 50,
   });
@@ -79,7 +79,7 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>交易</h1>
-          <p>跨任务全量交易（解析结果持久保存）：过滤、排序、下钻原始文本；分类/风险标记在 M4/M5 启用</p>
+          <p>按流水原文顺序排列（同一份 PDF 从上到下）。余额对不上只记在复核提示里，不改金额和方向。</p>
         </div>
       </div>
 
@@ -230,7 +230,6 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
               title: '日期',
               dataIndex: 'date',
               width: 96,
-              sorter: (a: TxRow, b: TxRow) => (a.date ?? '').localeCompare(b.date ?? ''),
               render: (v: unknown) => <span className="tx-date">{typeof v === 'string' ? v : '—'}</span>,
             },
             {
@@ -238,7 +237,6 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
               dataIndex: 'amount',
               width: 150,
               align: 'right',
-              sorter: (a: TxRow, b: TxRow) => a.amount - b.amount,
               render: (_: unknown, r: TxRow) => (
                 <span className={`tx-amount ${r.direction}`}>
                   {r.direction === 'in' ? '+' : '−'} {fmtAmount(r.amount)}
