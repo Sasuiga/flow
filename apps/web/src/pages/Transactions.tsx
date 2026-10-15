@@ -54,6 +54,7 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
       q: query.q,
       status: query.status,
       category: query.category,
+      fundUse: query.fundUse,
     };
     void api
       .txOptions(facet)
@@ -80,6 +81,13 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
             next.category = undefined;
             changed = true;
           }
+          if (q.fundUse === '__none__' && !opts.hasUnassignedFundUse) {
+            next.fundUse = undefined;
+            changed = true;
+          } else if (q.fundUse && q.fundUse !== '__none__' && !opts.fundUses.some((u) => String(u.id) === q.fundUse)) {
+            next.fundUse = undefined;
+            changed = true;
+          }
           return changed ? { ...next, page: 1 } : q;
         });
       })
@@ -100,6 +108,7 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
     query.q,
     query.status,
     query.category,
+    query.fundUse,
   ]);
 
   // 从某个流水文件进来时，带上它的银行和账户；之后用户改筛选不再被盖回去。
@@ -135,7 +144,7 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
 
   const patch = (p: Partial<TxQuery>) => setQuery((q) => ({ ...q, ...p, page: 1 }));
   const activeFilterCount = [
-    query.taskId, query.fileId, query.bank, query.accountNo, query.from, query.to,
+    query.taskId, query.fileId, query.bank, query.accountNo, query.fundUse, query.from, query.to,
     query.counterparty, query.status, query.category, query.q,
   ].filter((v) => v !== undefined && v !== '').length;
 
@@ -164,6 +173,22 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
             {options.tasks.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.clientName} / {t.projectName} / {t.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input filter-control"
+            value={query.fundUse ?? ''}
+            onChange={(e) => {
+              const fundUse = e.target.value || undefined;
+              patch(fundUse ? { fundUse, accountNo: undefined } : { fundUse: undefined });
+            }}
+          >
+            <option value="">全部募投项目</option>
+            {options.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
+            {options.fundUses.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
               </option>
             ))}
           </select>
@@ -348,6 +373,13 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
                 ) : (
                   '—'
                 ),
+            },
+            {
+              title: '募投项目',
+              dataIndex: 'fundUse',
+              width: 140,
+              ellipsis: true,
+              render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
               title: '文件',

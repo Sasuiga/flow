@@ -1,6 +1,6 @@
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
-import { CreateEntityInput, ProjectView, TaskView } from '@flow/shared';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { CreateEntityInput, FundUse, ProjectView, TaskView } from '@flow/shared';
 import { api, ProjectDetail as ProjectDetailData } from '../api';
 import { CreateDialog } from '../components/CreateDialog';
 import { ListRow, ListRowHeader } from '../components/ListRow';
@@ -21,6 +21,8 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | undefined>();
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
+  const [useName, setUseName] = useState('');
+  const [useBusy, setUseBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +81,47 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
+  async function addUse(e: FormEvent) {
+    e.preventDefault();
+    const name = useName.trim();
+    if (!name || !project) return;
+    setUseBusy(true);
+    try {
+      await api.createFundUse(project.id, name);
+      setUseName('');
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUseBusy(false);
+    }
+  }
+
+  async function removeUse(u: FundUse) {
+    if (!project) return;
+    const ok = await confirmDialog(`删除募投项目「${u.name}」？已归集的账户会变成未归集。`, {
+      title: '删除募投项目',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteFundUse(project.id, u.id);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function assignAccount(bank: string, accountNo: string, fundUseId: number | null) {
+    if (!project) return;
+    try {
+      await api.assignAccount(project.id, { bank, accountNo, fundUseId });
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   return (
     <div className="page">
       <nav className="breadcrumb">
@@ -95,6 +138,67 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
 
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
+
+      {project && detail ? (
+        <section className="fund-panel">
+          <div className="page-header" style={{ marginBottom: 10 }}>
+            <h2 style={{ fontSize: 16, margin: 0 }}>募投项目</h2>
+            <form className="fund-add" onSubmit={(e) => void addUse(e)}>
+              <input
+                className="input"
+                value={useName}
+                placeholder="名称"
+                onChange={(e) => setUseName(e.target.value)}
+              />
+              <button className="secondary-button" type="submit" disabled={useBusy || !useName.trim()}>
+                添加
+              </button>
+            </form>
+          </div>
+          {detail.fundUses.length > 0 ? (
+            <div className="fund-use-list">
+              {detail.fundUses.map((u) => (
+                <UseNameRow key={u.id} use={u} projectId={project.id} onDone={() => void load()} onError={setError} onDelete={() => void removeUse(u)} />
+              ))}
+            </div>
+          ) : null}
+          {detail.accounts.length > 0 ? (
+            <table className="fund-accounts">
+              <thead>
+                <tr>
+                  <th>银行</th>
+                  <th>账号</th>
+                  <th>户名</th>
+                  <th>募投项目</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.accounts.map((a) => (
+                  <tr key={`${a.bank}\t${a.accountNo}`}>
+                    <td>{a.bank || '—'}</td>
+                    <td className="fund-account-no">{a.accountNo}</td>
+                    <td>{a.accountName || '—'}</td>
+                    <td>
+                      <select
+                        className="input"
+                        value={a.fundUseId ?? ''}
+                        onChange={(e) => void assignAccount(a.bank, a.accountNo, e.target.value ? Number(e.target.value) : null)}
+                      >
+                        <option value="">未归集</option>
+                        {detail.fundUses.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+        </section>
+      ) : null}
 
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
@@ -181,6 +285,52 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
           onCreate={(input) => doCreate(input)}
         />
       ) : null}
+    </div>
+  );
+}
+
+function UseNameRow({
+  use,
+  projectId,
+  onDone,
+  onError,
+  onDelete,
+}: {
+  use: FundUse;
+  projectId: number;
+  onDone: () => void;
+  onError: (msg: string) => void;
+  onDelete: () => void;
+}) {
+  const [name, setName] = useState(use.name);
+  useEffect(() => setName(use.name), [use.name]);
+  return (
+    <div className="fund-use-item">
+      <input
+        className="input fund-use-name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onBlur={() => {
+          const next = name.trim();
+          if (!next || next === use.name) {
+            setName(use.name);
+            return;
+          }
+          void api
+            .renameFundUse(projectId, use.id, next)
+            .then(onDone)
+            .catch((err) => {
+              setName(use.name);
+              onError((err as Error).message);
+            });
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+      />
+      <button type="button" className="fund-use-del" onClick={onDelete} aria-label="删除">
+        ×
+      </button>
     </div>
   );
 }

@@ -161,6 +161,28 @@ CREATE INDEX IF NOT EXISTS idx_files_task ON files(task_id);
 // 索引统一在迁移之后创建：旧库的 files 表重建前没有 task_id 列，projects 表补列前没有 client_id
 db.exec('CREATE INDEX IF NOT EXISTS idx_files_task ON files(task_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id)');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS fund_uses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, name)
+);
+CREATE TABLE IF NOT EXISTS fund_use_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  bank TEXT NOT NULL DEFAULT '',
+  account_no TEXT NOT NULL,
+  fund_use_id INTEGER REFERENCES fund_uses(id) ON DELETE SET NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, bank, account_no)
+);
+CREATE INDEX IF NOT EXISTS idx_fund_uses_project ON fund_uses(project_id);
+CREATE INDEX IF NOT EXISTS idx_fund_use_accounts_project ON fund_use_accounts(project_id);
+`);
 // 遗留项目（client_id 为空）挂到自动创建的「遗留客户」下，避免 NULL 外键
 const legacy = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE client_id IS NULL').get() as { c: number };
 if (legacy.c > 0) {

@@ -19,6 +19,8 @@ import {
   TxPageResult,
   TxQuery,
   TxRow,
+  FundUse,
+  ProjectAccount,
 } from '@flow/shared';
 
 export interface LlmModelsResult {
@@ -48,6 +50,8 @@ export interface ProjectDetail {
   project: ProjectView;
   client: ClientBrief;
   tasks: TaskView[];
+  fundUses: FundUse[];
+  accounts: ProjectAccount[];
 }
 
 export interface TaskDetail {
@@ -95,6 +99,14 @@ export const api = {
   createTask: (projectId: number, i: CreateEntityInput) =>
     j<FlowTask>(`/api/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(i) }),
   openProjectFolder: (id: number) => j<{ ok: boolean }>(`/api/projects/${id}/open`, { method: 'POST' }),
+  createFundUse: (projectId: number, name: string) =>
+    j<FundUse>(`/api/projects/${projectId}/uses`, { method: 'POST', body: JSON.stringify({ name }) }),
+  renameFundUse: (projectId: number, useId: number, name: string) =>
+    j<FundUse>(`/api/projects/${projectId}/uses/${useId}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deleteFundUse: (projectId: number, useId: number) =>
+    j<{ ok: boolean }>(`/api/projects/${projectId}/uses/${useId}`, { method: 'DELETE' }),
+  assignAccount: (projectId: number, body: { bank: string; accountNo: string; fundUseId: number | null }) =>
+    j<{ ok: boolean }>(`/api/projects/${projectId}/accounts`, { method: 'PUT', body: JSON.stringify(body) }),
 
   /* ---------- 任务 ---------- */
   getTask: (id: number) => j<TaskDetail>(`/api/tasks/${id}`),

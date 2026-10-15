@@ -21,6 +21,8 @@ function toTxRow(r: Record<string, unknown>): TxRow {
     clientName: String(r.client_name ?? ''),
     bank: (r.bank as string | null) ?? undefined,
     accountNo: (r.account_no as string | null) ?? undefined,
+    fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
+    fundUse: (r.fund_use_name as string | null) || undefined,
     page: Number(r.page),
     lineNo: Number(r.line_no),
     date: (r.date as string | null) ?? undefined,
@@ -41,17 +43,26 @@ function toTxRow(r: Record<string, unknown>): TxRow {
   };
 }
 
+const TX_FROM = `
+FROM transactions t
+JOIN files f ON f.id = t.file_id
+JOIN tasks tk ON tk.id = f.task_id
+JOIN projects p ON p.id = tk.project_id
+JOIN clients c ON c.id = p.client_id
+LEFT JOIN fund_use_accounts fua
+  ON fua.project_id = tk.project_id
+ AND fua.account_no = f.account_no
+ AND fua.bank = COALESCE(f.bank, '')
+LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id`;
+
 const BASE_SELECT = `
 SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
        t.counterparty, t.counterparty_account, t.channel, t.category, t.category_src,
        t.risk_flags, t.confidence, t.review_note, t.raw_text, t.status,
        f.rel_path AS file_name, f.bank, f.account_no,
+       fu.id AS fund_use_id, fu.name AS fund_use_name,
        tk.name AS task_name, p.name AS project_name, c.name AS client_name
-FROM transactions t
-JOIN files f ON f.id = t.file_id
-JOIN tasks tk ON tk.id = f.task_id
-JOIN projects p ON p.id = tk.project_id
-JOIN clients c ON c.id = p.client_id`;
+${TX_FROM}`;
 
 export const transactionsRouter = Router();
 
@@ -121,14 +132,12 @@ transactionsRouter.get('/', (req, res) => {
   const page = Math.max(1, Number(q.page) || 1);
   const pageSize = Math.min(200, Math.max(10, Number(q.pageSize) || 50));
 
-  const total = Number(
-    (db.prepare(`SELECT COUNT(*) AS c FROM transactions t JOIN files f ON f.id = t.file_id${whereSql}`).get(...args) as { c: number }).c,
-  );
+  const total = Number((db.prepare(`SELECT COUNT(*) AS c ${TX_FROM}${whereSql}`).get(...args) as { c: number }).c);
   const agg = db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN t.direction = 'in' THEN t.amount ELSE 0 END), 0) AS inflow,
               COALESCE(SUM(CASE WHEN t.direction = 'out' THEN t.amount ELSE 0 END), 0) AS outflow
-       FROM transactions t JOIN files f ON f.id = t.file_id${whereSql}`,
+       ${TX_FROM}${whereSql}`,
     )
     .get(...args) as { inflow: number; outflow: number };
   const rows = db
@@ -142,12 +151,7 @@ transactionsRouter.get('/', (req, res) => {
 /** 过滤器选项。每一项都按其余条件收窄：选了银行，账户只剩这家银行的账号。 */
 transactionsRouter.get('/options', (req, res) => {
   const q = req.query as unknown as Record<string, string | undefined>;
-  const from = `
-FROM transactions t
-JOIN files f ON f.id = t.file_id
-JOIN tasks tk ON tk.id = f.task_id
-JOIN projects p ON p.id = tk.project_id
-JOIN clients c ON c.id = p.client_id`;
+  const from = TX_FROM;
 
   const taskWhere = buildWhere(q, ['taskId']);
   const taskRows = db
@@ -193,7 +197,21 @@ JOIN clients c ON c.id = p.client_id`;
       .all(...categoryWhere.args) as { category: string }[]
   ).map((r) => r.category);
 
-  const options: TxOptions = { tasks, banks, accounts, categories };
+  const useWhere = buildWhere(q, ['fundUse']);
+  const fundUses = (
+    db
+      .prepare(
+        `SELECT DISTINCT fu.id AS id, fu.name AS name ${from}${andWhere(useWhere.whereSql, 'fu.id IS NOT NULL')} ORDER BY fu.name`,
+      )
+      .all(...useWhere.args) as { id: number; name: string }[]
+  ).map((r) => ({ id: Number(r.id), name: r.name }));
+  const unassigned = db
+    .prepare(
+      `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, "fu.id IS NULL AND f.account_no IS NOT NULL AND TRIM(f.account_no) != ''")} LIMIT 1`,
+    )
+    .get(...useWhere.args);
+
+  const options: TxOptions = { tasks, banks, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned };
   res.json(options);
 });
 
@@ -221,6 +239,11 @@ function buildWhere(
   if (has('accountNo')) {
     where.push('f.account_no LIKE ?');
     args.push(`%${q.accountNo}%`);
+  }
+  if (!skip.has('fundUse') && q.fundUse === '__none__') where.push('fu.id IS NULL');
+  else if (has('fundUse')) {
+    where.push('fu.id = ?');
+    args.push(Number(q.fundUse));
   }
   if (has('from')) {
     where.push('t.date >= ?');

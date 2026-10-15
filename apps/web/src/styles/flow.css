@@ -1447,6 +1447,77 @@ select.input {
   align-items: center;
 }
 
+.fund-panel {
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.fund-add {
+  display: flex;
+  gap: 8px;
+}
+
+.fund-add .input {
+  width: 220px;
+}
+
+.fund-use-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.fund-use-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fund-use-name {
+  width: 180px;
+}
+
+.fund-use-del {
+  border: none;
+  background: transparent;
+  color: var(--ui-faint);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.fund-accounts {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.fund-accounts th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ui-faint);
+  padding: 6px 8px;
+}
+
+.fund-accounts td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--ui-border);
+  vertical-align: middle;
+}
+
+.fund-account-no {
+  font-family: var(--ui-font-mono);
+}
+
+.fund-accounts select.input {
+  min-width: 160px;
+}
+
 .review-form .input {
   width: 140px;
 }

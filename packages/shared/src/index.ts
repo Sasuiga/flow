@@ -220,6 +220,9 @@ export interface TxRow {
   clientName: string;
   bank?: string;
   accountNo?: string;
+  /** 募投项目，由融资项目上的账户归集带出 */
+  fundUseId?: number;
+  fundUse?: string;
   page: number;
   lineNo: number;
   date?: string;
@@ -245,6 +248,8 @@ export interface TxQuery {
   fileId?: number;
   bank?: string;
   accountNo?: string;
+  /** 募投项目。数字 id，或 '__none__' 表示未归集 */
+  fundUse?: string;
   from?: string;
   to?: string;
   counterparty?: string;
@@ -267,9 +272,28 @@ export interface TxPageResult {
 
 export interface TxOptions {
   tasks: { id: number; name: string; clientName: string; projectName: string; txCount: number }[];
+  /** 当前其余条件下出现过的募投项目 */
+  fundUses: { id: number; name: string }[];
+  /** 有账号尚未归集到募投项目 */
+  hasUnassignedFundUse: boolean;
   banks: string[];
   accounts: string[];
   categories: string[];
+}
+
+export interface FundUse {
+  id: number;
+  projectId: number;
+  name: string;
+}
+
+/** 融资项目下已解析出的账号，以及手工归集的募投项目 */
+export interface ProjectAccount {
+  bank: string;
+  accountNo: string;
+  accountName?: string;
+  txCount: number;
+  fundUseId?: number;
 }
 
 /** 顶栏「当前任务」上下文切换器（Avalon ChromeContextTab，M2 交付） */
