@@ -77,11 +77,23 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
   }
 
   async function doParseAll() {
+    const doneCount = detail?.files.filter((f) => f.txCount > 0 && f.status !== 'parsing').length ?? 0;
+    if (doneCount > 0) {
+      const ok = await confirmDialog(
+        `其中 ${doneCount} 份已经解析过。重新解析会按当前规则重抽，原有交易（含人工修改）会被替换。`,
+        { title: '重新解析已完成的文件', confirmLabel: '重新解析' },
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     setNotice(undefined);
     try {
       const r = await api.parseTask(taskId);
-      setNotice(`已加入解析队列：新增扫描 ${r.added} 份，待解析 ${r.queued} 份（LLM 并发见设置页）`);
+      setNotice(
+        r.queued > 0
+          ? `已加入解析队列 ${r.queued} 份${r.added ? `（新扫描 ${r.added} 份）` : ''}，完成后交易会按新规则替换`
+          : '没有可解析的文件（可能都在解析中）',
+      );
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -91,10 +103,17 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
   }
 
   async function doParse(f: BankFile) {
+    if (f.txCount > 0) {
+      const ok = await confirmDialog(`重新解析「${f.relPath}」？原有 ${f.txCount} 笔交易（含人工修改）会被替换。`, {
+        title: '重新解析',
+        confirmLabel: '重新解析',
+      });
+      if (!ok) return;
+    }
     setNotice(undefined);
     try {
       const r = await api.parseFile(f.id);
-      setNotice(r.queued ? `「${f.relPath}」已加入解析队列` : '该文件正在解析中');
+      setNotice(r.queued ? `「${f.relPath}」已加入解析队列，完成后会替换原交易` : '该文件正在解析中');
       await load();
     } catch (e) {
       setError((e as Error).message);

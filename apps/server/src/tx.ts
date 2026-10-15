@@ -221,7 +221,7 @@ filesRouter.post('/:id/parse', (req, res) => {
   res.json({ ok: true, queued, alreadyRunning: !queued });
 });
 
-/** 任务级：重扫目录 + 把所有「待解析」文件入队 */
+/** 任务级：重扫目录，并把尚未在解析中的 PDF 全部入队（含已完成/待复核，按当前规则重抽） */
 filesRouter.post('/task/:taskId/parse', (req, res) => {
   const taskId = Number(req.params.taskId);
   const task = db.prepare('SELECT id, folder_path FROM tasks WHERE id = ?').get(taskId) as
@@ -230,9 +230,9 @@ filesRouter.post('/task/:taskId/parse', (req, res) => {
   if (!task) return res.status(404).json({ error: '任务不存在' });
   const added = refreshTaskFilesAuto(taskId, task.folder_path);
   let queued = 0;
-  for (const r of db
-    .prepare(`SELECT id FROM files WHERE task_id = ? AND status IN ('scanned','error')`)
-    .all(taskId) as { id: number }[]) {
+  for (const r of db.prepare(`SELECT id FROM files WHERE task_id = ? AND status != 'parsing'`).all(taskId) as {
+    id: number;
+  }[]) {
     if (parseQueue.enqueue(r.id)) queued++;
   }
   res.json({ ok: true, added, queued });
