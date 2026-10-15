@@ -106,9 +106,9 @@ export const api = {
     j<FundUse>(`/api/projects/${projectId}/uses/${useId}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   deleteFundUse: (projectId: number, useId: number) =>
     j<{ ok: boolean }>(`/api/projects/${projectId}/uses/${useId}`, { method: 'DELETE' }),
-  createAccount: (projectId: number, body: { holder: string; bank: string; accountNo: string }) =>
+  createAccount: (projectId: number, body: { holder: string; bank: string; accountNo: string; openedOn: string }) =>
     j<ProjectAccount>(`/api/projects/${projectId}/accounts`, { method: 'POST', body: JSON.stringify(body) }),
-  updateAccount: (projectId: number, accountId: number, body: { holder: string; bank: string; accountNo: string }) =>
+  updateAccount: (projectId: number, accountId: number, body: { holder: string; bank: string; accountNo: string; openedOn: string }) =>
     j<ProjectAccount>(`/api/projects/${projectId}/accounts/${accountId}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteAccount: (projectId: number, accountId: number) =>
     j<{ ok: boolean }>(`/api/projects/${projectId}/accounts/${accountId}`, { method: 'DELETE' }),

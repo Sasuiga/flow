@@ -91,6 +91,7 @@ function toProjectAccount(r: Record<string, unknown>): ProjectAccount {
     accountNo: String(r.account_no),
     fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
     fundUse: (r.fund_use_name as string | null) || undefined,
+    openedOn: String(r.opened_on ?? '') || undefined,
   };
 }
 
@@ -108,15 +109,24 @@ function listProjectAccounts(projectId: number): ProjectAccount[] {
   ).map(toProjectAccount);
 }
 
-function readAccountBody(body: unknown): { holder: string; bank: string; accountNo: string; key: string } | { error: string } {
-  const b = (body ?? {}) as { holder?: string; bank?: string; accountNo?: string };
+function readAccountBody(
+  body: unknown,
+): { holder: string; bank: string; accountNo: string; openedOn: string; key: string } | { error: string } {
+  const b = (body ?? {}) as { holder?: string; bank?: string; accountNo?: string; openedOn?: string };
   const holder = String(b.holder ?? '').trim();
   const bank = String(b.bank ?? '').trim();
   const accountNo = String(b.accountNo ?? '').trim();
+  const openedOn = String(b.openedOn ?? '').trim();
   if (!holder || !bank || !accountNo) return { error: '请填写账户主体、开户行和账号' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(openedOn)) return { error: '请填写开户时间' };
+  const [y, m, d] = openedOn.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    return { error: '请填写开户时间' };
+  }
   const key = normAccountNo(accountNo);
   if (!key) return { error: '请填写账户主体、开户行和账号' };
-  return { holder, bank, accountNo, key };
+  return { holder, bank, accountNo, openedOn, key };
 }
 
 export const projectsRouter = Router();
@@ -189,10 +199,10 @@ projectsRouter.post('/:id/accounts', (req, res) => {
   try {
     const r = db
       .prepare(
-        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?)`,
+        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, opened_on, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?)`,
       )
-      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, now(), now());
+      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, now(), now());
     const row = db
       .prepare(
         `SELECT fua.*, fu.name AS fund_use_name FROM fund_use_accounts fua
@@ -221,9 +231,9 @@ projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
   try {
     db.prepare(
       `UPDATE fund_use_accounts
-       SET holder = ?, bank = ?, account_no = ?, account_key = ?, updated_at = ?
+       SET holder = ?, bank = ?, account_no = ?, account_key = ?, opened_on = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, now(), accountId);
+    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, now(), accountId);
   } catch {
     return res.status(409).json({ error: '已有这个账号' });
   }

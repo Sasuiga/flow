@@ -37,6 +37,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [holder, setHolder] = useState('');
   const [acctBank, setAcctBank] = useState('');
   const [acctNo, setAcctNo] = useState('');
+  const [openedOn, setOpenedOn] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -174,12 +175,13 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     setHolder(row === 'new' ? '' : row.holder);
     setAcctBank(row === 'new' ? '' : row.bank);
     setAcctNo(row === 'new' ? '' : row.accountNo);
+    setOpenedOn(row === 'new' ? '' : row.openedOn ?? '');
   }
 
   async function saveAccount() {
     if (!project || !acctEdit) return;
-    const body = { holder: holder.trim(), bank: acctBank.trim(), accountNo: acctNo.trim() };
-    if (!body.holder || !body.bank || !body.accountNo) return;
+    const body = { holder: holder.trim(), bank: acctBank.trim(), accountNo: acctNo.trim(), openedOn };
+    if (!body.holder || !body.bank || !body.accountNo || !body.openedOn) return;
     setUseBusy(true);
     try {
       if (acctEdit === 'new') await api.createAccount(project.id, body);
@@ -244,7 +246,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
           {detail.accounts.length === 0 ? (
             <div className="flow-empty">
               <h3>还没有募资专户</h3>
-              <p>先录入账户主体、开户行和账号。各期流水会按这份清单核对是否到齐。</p>
+              <p>先录入账户主体、开户行、账号和开户时间。各期流水会按这份清单核对是否到齐。</p>
               <div className="flow-empty-actions">
                 <button className="primary-button" onClick={() => openAccount('new')}>
                   <Plus size={15} /> 新建募资专户
@@ -253,13 +255,15 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
             </div>
           ) : (
             <>
+              <div className="acct-table">
               <ListRowHeader
                 withMenu
                 cols={[
-                  { label: '账户主体', cls: 'list-row-col-title' },
-                  { label: '开户行', cls: 'list-row-col-meta' },
-                  { label: '账号', cls: 'list-row-col-account' },
-                  { label: '募投项目', cls: 'list-row-col-meta' },
+                  { label: '账户主体', cls: 'acct-col-holder' },
+                  { label: '开户行', cls: 'acct-col-bank' },
+                  { label: '账号', cls: 'acct-col-no' },
+                  { label: '开户时间', cls: 'acct-col-date' },
+                  { label: '募投项目', cls: 'acct-col-use' },
                 ]}
               />
               {detail.accounts.map((a) => (
@@ -272,12 +276,14 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                     { label: '删除', danger: true, onClick: () => void removeAccount(a) },
                   ]}
                 >
-                  <span className="list-row-col-title">{a.holder}</span>
-                  <span className="list-row-col-meta">{a.bank}</span>
-                  <span className="list-row-col-account">{a.accountNo}</span>
-                  <span className="list-row-col-meta">{a.fundUse || '—'}</span>
+                  <span className="acct-col-holder" title={a.holder}>{a.holder}</span>
+                  <span className="acct-col-bank" title={a.bank}>{a.bank}</span>
+                  <span className="acct-col-no" title={a.accountNo}>{a.accountNo}</span>
+                  <span className="acct-col-date">{a.openedOn || '—'}</span>
+                  <span className="acct-col-use" title={a.fundUse || undefined}>{a.fundUse || '—'}</span>
                 </ListRow>
               ))}
+              </div>
             </>
           )}
         </section>
@@ -452,13 +458,17 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               }}
             />
           </div>
+          <div className="field">
+            <span className="field-label">开户时间</span>
+            <input className="input" type="date" value={openedOn} onChange={(e) => setOpenedOn(e.target.value)} />
+          </div>
           <div className="modal-actions">
             <button className="secondary-button" disabled={useBusy} onClick={() => setAcctEdit(null)}>
               取消
             </button>
             <button
               className="primary-button"
-              disabled={useBusy || !holder.trim() || !acctBank.trim() || !acctNo.trim()}
+              disabled={useBusy || !holder.trim() || !acctBank.trim() || !acctNo.trim() || !openedOn}
               onClick={() => void saveAccount()}
             >
               {acctEdit === 'new' ? '创建' : '保存'}

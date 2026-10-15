@@ -300,6 +300,8 @@ export interface ProjectAccount {
   accountNo: string;
   fundUseId?: number;
   fundUse?: string;
+  /** 开户日期 YYYY-MM-DD，未填为空 */
+  openedOn?: string;
 }
 
 /** 顶栏「当前任务」上下文切换器（Avalon ChromeContextTab，M2 交付） */

@@ -203,7 +203,7 @@ select:focus-visible {
 }
 
 .page {
-  max-width: 980px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 20px 24px 48px;
 }
@@ -972,6 +972,56 @@ select.input {
   color: var(--ui-muted);
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* 募资专户表：表头和行共用同一组列宽，避免按文字长短各自撑开 */
+.acct-table .list-row-table-header,
+.acct-table .list-row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 108px minmax(168px, 1fr) 96px minmax(0, 1.35fr);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.acct-table .list-row-table-header.with-menu {
+  padding: 0 48px 0 12px;
+}
+
+.acct-table .list-row-main {
+  padding: 6px 12px;
+}
+
+.acct-table .acct-col-holder,
+.acct-table .acct-col-bank,
+.acct-table .acct-col-no,
+.acct-table .acct-col-date,
+.acct-table .acct-col-use {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.acct-table .list-row-main .acct-col-holder {
+  font-weight: 600;
+}
+
+.acct-table .list-row-main .acct-col-bank,
+.acct-table .list-row-main .acct-col-date,
+.acct-table .list-row-main .acct-col-use {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ui-muted);
+}
+
+.acct-table .list-row-main .acct-col-use {
+  color: var(--ui-text);
+}
+
+.acct-table .list-row-main .acct-col-no {
+  font-family: var(--ui-font-mono);
+  font-size: 12px;
+  color: var(--ui-muted);
 }
 
 .file-row-cols .list-row-col-count {
