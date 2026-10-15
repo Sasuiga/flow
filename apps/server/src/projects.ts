@@ -109,6 +109,15 @@ function listProjectAccounts(projectId: number): ProjectAccount[] {
   ).map(toProjectAccount);
 }
 
+function resolveFundUseId(projectId: number, raw: unknown): number | null | { error: string } {
+  if (raw == null || raw === '') return null;
+  const id = Number(raw);
+  if (!Number.isFinite(id)) return { error: '募投项目不存在' };
+  const use = db.prepare('SELECT id FROM fund_uses WHERE id = ? AND project_id = ?').get(id, projectId);
+  if (!use) return { error: '募投项目不存在' };
+  return id;
+}
+
 function readAccountBody(
   body: unknown,
 ): { holder: string; bank: string; accountNo: string; openedOn: string; key: string } | { error: string } {
@@ -192,6 +201,8 @@ projectsRouter.post('/:id/accounts', (req, res) => {
   if (!project) return res.status(404).json({ error: '项目不存在' });
   const parsed = readAccountBody(req.body);
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  const fundUseId = resolveFundUseId(projectId, (req.body as { fundUseId?: unknown })?.fundUseId);
+  if (typeof fundUseId === 'object' && fundUseId) return res.status(400).json({ error: fundUseId.error });
   const taken = db
     .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ?')
     .get(projectId, parsed.key);
@@ -199,10 +210,10 @@ projectsRouter.post('/:id/accounts', (req, res) => {
   try {
     const r = db
       .prepare(
-        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, opened_on, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?,?)`,
+        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, opened_on, fund_use_id, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?)`,
       )
-      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, now(), now());
+      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, fundUseId, now(), now());
     const row = db
       .prepare(
         `SELECT fua.*, fu.name AS fund_use_name FROM fund_use_accounts fua
@@ -224,6 +235,8 @@ projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
   if (!existing) return res.status(404).json({ error: '募资专户不存在' });
   const parsed = readAccountBody(req.body);
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  const fundUseId = resolveFundUseId(projectId, (req.body as { fundUseId?: unknown })?.fundUseId);
+  if (typeof fundUseId === 'object' && fundUseId) return res.status(400).json({ error: fundUseId.error });
   const taken = db
     .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ? AND id != ?')
     .get(projectId, parsed.key, accountId);
@@ -231,9 +244,9 @@ projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
   try {
     db.prepare(
       `UPDATE fund_use_accounts
-       SET holder = ?, bank = ?, account_no = ?, account_key = ?, opened_on = ?, updated_at = ?
+       SET holder = ?, bank = ?, account_no = ?, account_key = ?, opened_on = ?, fund_use_id = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, now(), accountId);
+    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, fundUseId, now(), accountId);
   } catch {
     return res.status(409).json({ error: '已有这个账号' });
   }

@@ -8,10 +8,6 @@ import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
 import { formatDate } from '../lib/format';
 
-function accountKey(a: Pick<ProjectAccount, 'bank' | 'accountNo'>) {
-  return `${a.bank}\t${a.accountNo}`;
-}
-
 type ProjectPageProps = {
   projectId: number;
   onBackToClient: (clientId: number) => void;
@@ -31,13 +27,12 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [useBusy, setUseBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<FundUse | null>(null);
   const [renameName, setRenameName] = useState('');
-  const [attachId, setAttachId] = useState<number | null>(null);
-  const [picked, setPicked] = useState<string[]>([]);
   const [acctEdit, setAcctEdit] = useState<ProjectAccount | 'new' | null>(null);
   const [holder, setHolder] = useState('');
   const [acctBank, setAcctBank] = useState('');
   const [acctNo, setAcctNo] = useState('');
   const [openedOn, setOpenedOn] = useState('');
+  const [acctUseId, setAcctUseId] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -129,7 +124,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
 
   async function removeUse(u: FundUse) {
     if (!project) return;
-    const ok = await confirmDialog(`删除募投项目「${u.name}」？已归集的账户会变成未归集。`, {
+    const ok = await confirmDialog(`删除募投项目「${u.name}」？选了它的募资专户会空出来，流水不动。`, {
       title: '删除募投项目',
       danger: true,
     });
@@ -142,45 +137,24 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
-  async function assignAccount(bank: string, accountNo: string, fundUseId: number | null) {
-    if (!project) return;
-    try {
-      await api.assignAccount(project.id, { bank, accountNo, fundUseId });
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function hangPicked(useId: number, accounts: ProjectAccount[]) {
-    if (!project || picked.length === 0) return;
-    setUseBusy(true);
-    try {
-      for (const key of picked) {
-        const acc = accounts.find((a) => accountKey(a) === key);
-        if (!acc) continue;
-        await api.assignAccount(project.id, { bank: acc.bank, accountNo: acc.accountNo, fundUseId: useId });
-      }
-      setPicked([]);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setUseBusy(false);
-    }
-  }
-
   function openAccount(row: ProjectAccount | 'new') {
     setAcctEdit(row);
     setHolder(row === 'new' ? '' : row.holder);
     setAcctBank(row === 'new' ? '' : row.bank);
     setAcctNo(row === 'new' ? '' : row.accountNo);
     setOpenedOn(row === 'new' ? '' : row.openedOn ?? '');
+    setAcctUseId(row === 'new' || row.fundUseId == null ? '' : String(row.fundUseId));
   }
 
   async function saveAccount() {
     if (!project || !acctEdit) return;
-    const body = { holder: holder.trim(), bank: acctBank.trim(), accountNo: acctNo.trim(), openedOn };
+    const body = {
+      holder: holder.trim(),
+      bank: acctBank.trim(),
+      accountNo: acctNo.trim(),
+      openedOn,
+      fundUseId: acctUseId ? Number(acctUseId) : null,
+    };
     if (!body.holder || !body.bank || !body.accountNo || !body.openedOn) return;
     setUseBusy(true);
     try {
@@ -197,7 +171,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
 
   async function removeAccount(a: ProjectAccount) {
     if (!project) return;
-    const ok = await confirmDialog(`删除募资专户「${a.holder}」？挂在上面的募投项目会解开，流水不动。`, {
+    const ok = await confirmDialog(`删除募资专户「${a.holder}」？流水不动。`, {
       title: '删除募资专户',
       danger: true,
     });
@@ -209,10 +183,6 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       setError((err as Error).message);
     }
   }
-
-  const attachUse = attachId != null ? detail?.fundUses.find((u) => u.id === attachId) : undefined;
-  const attached = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId === attachUse.id) : [];
-  const freeAccounts = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId == null) : [];
 
   return (
     <div className="page">
@@ -305,7 +275,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
           {detail.fundUses.length === 0 ? (
             <div className="flow-empty">
               <h3>还没有募投项目</h3>
-              <p>先录入募投项目，再把对应的专户挂上去。</p>
+              <p>建好后，在募资专户里选上对应项目。</p>
               <div className="flow-empty-actions">
                 <button className="primary-button" onClick={() => { setUseName(''); setUseOpen(true); }}>
                   <Plus size={15} /> 新建募投项目
@@ -327,18 +297,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                   <ListRow
                     key={u.id}
                     title={u.name}
-                    onClick={() => {
-                      setPicked([]);
-                      setAttachId(u.id);
-                    }}
                     menuItems={[
-                      {
-                        label: '挂账户',
-                        onClick: () => {
-                          setPicked([]);
-                          setAttachId(u.id);
-                        },
-                      },
                       {
                         label: '重命名',
                         onClick: () => {
@@ -462,6 +421,17 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
             <span className="field-label">开户时间</span>
             <input className="input" type="date" value={openedOn} onChange={(e) => setOpenedOn(e.target.value)} />
           </div>
+          <div className="field">
+            <span className="field-label">募投项目</span>
+            <select className="input" value={acctUseId} onChange={(e) => setAcctUseId(e.target.value)}>
+              <option value="">不挂</option>
+              {(detail?.fundUses ?? []).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="modal-actions">
             <button className="secondary-button" disabled={useBusy} onClick={() => setAcctEdit(null)}>
               取消
@@ -529,79 +499,6 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               保存
             </button>
           </div>
-        </Modal>
-      ) : null}
-
-      {attachUse ? (
-        <Modal title={attachUse.name} onClose={() => !useBusy && setAttachId(null)} disableDismiss={useBusy} width={520}>
-          <div className="pick-label">已挂账户</div>
-          {attached.length === 0 ? (
-            <p className="pick-empty">{detail && detail.accounts.length === 0 ? '先录入募资专户，再挂到这里' : '还没有账户'}</p>
-          ) : (
-            <div className="pick-list">
-              {attached.map((a) => (
-                <div className="pick-row" key={accountKey(a)}>
-                  <span className="pick-row-main">
-                    <span className="pick-row-name">
-                      {a.holder}
-                      {a.bank ? ` · ${a.bank}` : ''}
-                    </span>
-                    <span className="pick-row-no">{a.accountNo}</span>
-                  </span>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={useBusy}
-                    onClick={() => void assignAccount(a.bank, a.accountNo, null)}
-                  >
-                    移出
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {freeAccounts.length > 0 ? (
-            <>
-              <div className="pick-label">可挂专户</div>
-              <div className="pick-list">
-                {freeAccounts.map((a) => {
-                  const key = accountKey(a);
-                  const on = picked.includes(key);
-                  return (
-                    <label key={key} className={`pick-row pick-check${on ? ' active' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => setPicked((prev) => (on ? prev.filter((k) => k !== key) : [...prev, key]))}
-                      />
-                      <span className="pick-row-main">
-                        <span className="pick-row-name">
-                          {a.holder}
-                          {a.bank ? ` · ${a.bank}` : ''}
-                        </span>
-                        <span className="pick-row-no">{a.accountNo}</span>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-              <div className="modal-actions">
-                <button className="secondary-button" disabled={useBusy} onClick={() => setAttachId(null)}>
-                  关闭
-                </button>
-                <button className="primary-button" disabled={useBusy || picked.length === 0} onClick={() => void hangPicked(attachUse.id, freeAccounts)}>
-                  挂上
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="modal-actions">
-              <button className="secondary-button" disabled={useBusy} onClick={() => setAttachId(null)}>
-                关闭
-              </button>
-            </div>
-          )}
         </Modal>
       ) : null}
 
