@@ -23,15 +23,26 @@ type AppChromeProps = {
   contextTask?: TaskBrief | null;
   recentTasks?: TaskBrief[];
   onPickTask?: (id: number | null) => void;
+  /** 点击任务名：回到该任务页 */
+  onOpenTask?: (id: number) => void;
+  taskTabActive?: boolean;
 };
 
 const MENU_WIDTH = 280;
 const MARGIN = 8;
 
-export function AppChrome({ active, onNav, contextTask, recentTasks = [], onPickTask }: AppChromeProps) {
+export function AppChrome({
+  active,
+  onNav,
+  contextTask,
+  recentTasks = [],
+  onPickTask,
+  onOpenTask,
+  taskTabActive,
+}: AppChromeProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | undefined>();
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = useRef<HTMLDivElement | null>(null);
 
   function toggleMenu() {
     if (menuOpen) {
@@ -72,17 +83,23 @@ export function AppChrome({ active, onNav, contextTask, recentTasks = [], onPick
           </button>
         ))}
         {/* 当前任务上下文切换器（Avalon 上下文标签观感） */}
-        <button
+        <div
           ref={triggerRef}
-          type="button"
-          className={`app-chrome-tab ctx-tab${contextTask ? '' : ' empty'}`}
-          onClick={toggleMenu}
+          className={`app-chrome-tab ctx-tab${contextTask ? '' : ' empty'}${taskTabActive ? ' task-open' : ''}`}
           title={contextTask ? `${contextTask.clientName} / ${contextTask.projectName}` : '从最近任务中选择'}
         >
-          <FolderOpen size={13} strokeWidth={2} />
-          <span className="ctx-tab-label">{contextTask ? contextTask.name : '当前任务'}</span>
-          <ChevronDown size={12} strokeWidth={2} />
-        </button>
+          <button
+            type="button"
+            className="ctx-tab-main"
+            onClick={() => (contextTask ? onOpenTask?.(contextTask.id) : toggleMenu())}
+          >
+            <FolderOpen size={13} strokeWidth={2} />
+            <span className="ctx-tab-label">{contextTask ? contextTask.name : '当前任务'}</span>
+          </button>
+          <button type="button" className="ctx-tab-chevron" aria-label="最近任务" onClick={toggleMenu}>
+            <ChevronDown size={12} strokeWidth={2} />
+          </button>
+        </div>
         {menuOpen && menuPos ? (
           <div className="ctx-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">
             <div className="ctx-menu-title">最近任务</div>

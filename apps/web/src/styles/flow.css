@@ -986,7 +986,37 @@ select.input {
   border: 1px solid var(--ui-border);
   background: var(--ui-panel);
   color: var(--ui-muted);
-  max-width: 220px;
+  max-width: 240px;
+  padding: 0;
+  gap: 0;
+}
+
+.ctx-tab-main,
+.ctx-tab-chevron {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.ctx-tab-main {
+  gap: 5px;
+  min-width: 0;
+  padding-left: 10px;
+}
+
+.ctx-tab-chevron {
+  padding: 0 8px 0 4px;
+}
+
+.ctx-tab.task-open {
+  color: var(--ui-primary);
+  box-shadow: 0 1px 2px rgba(28, 34, 48, 0.06), 0 0 0 1px var(--ui-primary-border);
 }
 
 .ctx-tab:not(.empty) {

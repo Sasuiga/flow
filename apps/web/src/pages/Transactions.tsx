@@ -6,9 +6,10 @@ import { api } from '../api';
 import { formatMoney } from '../lib/format';
 
 type TxPageProps = {
-  /** 导航上下文带入的过滤（任务页「查看交易」/文件行下钻） */
+  /** 导航上下文带入的过滤（点某个流水文件时带上它的银行和账户） */
   initialTaskId?: number;
-  initialFileId?: number;
+  initialBank?: string;
+  initialAccountNo?: string;
 };
 
 const STATUS_CHIP: Record<string, { cls: string; label: string }> = {
@@ -25,11 +26,12 @@ function fmtAmount(n?: number): string {
  * 交易浏览器（M2）：跨任务全量交易表
  * 过滤（任务/银行/账户/日期/对手方/状态/分类）+ 分页 + 行展开看原始文本。
  */
-export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) {
+export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo }: TxPageProps) {
   const [options, setOptions] = useState<TxOptions | null>(null);
   const [query, setQuery] = useState<TxQuery>({
     taskId: initialTaskId,
-    fileId: initialFileId,
+    bank: initialBank,
+    accountNo: initialAccountNo,
     sort: 'stmt',
     page: 1,
     pageSize: 50,
@@ -100,10 +102,17 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
     query.category,
   ]);
 
-  // 导航上下文变化时同步（任务页「查看交易」→ 交易页）
+  // 从某个流水文件进来时，带上它的银行和账户；之后用户改筛选不再被盖回去。
   useEffect(() => {
-    setQuery((q) => ({ ...q, taskId: initialTaskId, fileId: initialFileId }));
-  }, [initialTaskId, initialFileId]);
+    setQuery((q) => ({
+      ...q,
+      taskId: initialTaskId,
+      fileId: undefined,
+      bank: initialBank,
+      accountNo: initialAccountNo,
+      page: 1,
+    }));
+  }, [initialTaskId, initialBank, initialAccountNo]);
 
   useEffect(() => {
     const my = ++seq.current;

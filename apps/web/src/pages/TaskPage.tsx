@@ -1,4 +1,4 @@
-import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, ScrollText, Trash2, X } from 'lucide-react';
+import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BankFile, FileStatus, ParseStep } from '@flow/shared';
 import { api, TaskDetail } from '../api';
@@ -17,15 +17,13 @@ const STATUS_CHIP: Record<FileStatus, { cls: string; label: string }> = {
 type TaskPageProps = {
   taskId: number;
   onBackToProject: (projectId: number) => void;
-  /** 任务级：查看该任务全部交易 */
-  onBrowseTx: (taskId: number) => void;
-  /** 文件级下钻：只看这个文件的交易 */
-  onBrowseFileTx: (taskId: number, fileId: number) => void;
+  /** 点一个文件：按该文件的银行、账户进入交易页，筛选仍可改 */
+  onBrowseFile: (file: BankFile) => void;
   /** 任务有增删 → 顶栏最近任务列表刷新 */
   onChangedTasks?: () => void;
 };
 
-export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, onChangedTasks }: TaskPageProps) {
+export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks }: TaskPageProps) {
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
@@ -179,9 +177,6 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
             </div>
           </div>
           <div className="page-header-actions" style={{ marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button className="primary-button" onClick={() => onBrowseTx(task.id)}>
-              <ScrollText size={14} /> 查看交易
-            </button>
             <button className="secondary-button" disabled={task.dirMissing || busy} onClick={() => void doParseAll()}>
               <Play size={13} /> 全部解析
             </button>
@@ -253,10 +248,10 @@ export function TaskPage({ taskId, onBackToProject, onBrowseTx, onBrowseFileTx, 
                 <div key={f.id}>
                   <ListRow
                     active={f.status === 'parsing'}
-                    onClick={() => onBrowseFileTx(taskId, f.id)}
+                    onClick={() => onBrowseFile(f)}
                     title={f.relPath}
                     menuItems={[
-                      { label: '查看交易', onClick: () => onBrowseFileTx(taskId, f.id) },
+                      { label: '查看交易', onClick: () => onBrowseFile(f) },
                       f.status === 'done' || f.status === 'needs_review'
                         ? { label: '重新解析', onClick: () => void doParse(f) }
                         : { label: '开始解析', disabled: f.status === 'parsing', onClick: () => void doParse(f) },

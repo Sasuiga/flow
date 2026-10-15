@@ -16,7 +16,7 @@ type View =
   | { k: 'client'; id: number }
   | { k: 'project'; id: number }
   | { k: 'task'; id: number }
-  | { k: 'tx'; taskId?: number; fileId?: number }
+  | { k: 'tx'; taskId?: number; bank?: string; accountNo?: string }
   | { k: 'review' }
   | { k: 'rules' }
   | { k: 'settings' };
@@ -28,10 +28,27 @@ type View =
 export default function App() {
   const [view, setView] = useState<View>(() => {
     // 深链：#/client/1 /#/project/1 /#/task/1 /#/tx?task=1&file=2（刷新/分享保持位置）
+    const tx = location.hash.match(/^#\/tx(?:\?(.*))?$/);
+    if (tx) {
+      const qs = new URLSearchParams(tx[1] ?? '');
+      return {
+        k: 'tx',
+        taskId: qs.get('task') ? Number(qs.get('task')) : undefined,
+        bank: qs.get('bank') || undefined,
+        accountNo: qs.get('account') || undefined,
+      };
+    }
     const m = location.hash.match(/^#\/(client|project|task)\/(\d+)(?:\?(.*))?$/);
     if (m) {
       const qs = m[3] ? new URLSearchParams(m[3]) : null;
-      if (m[1] === 'task' && qs?.get('tx')) return { k: 'tx', taskId: Number(qs.get('task')) || undefined, fileId: Number(qs.get('file')) || undefined };
+      if (m[1] === 'task' && qs?.get('tx')) {
+        return {
+          k: 'tx',
+          taskId: Number(m[2]),
+          bank: qs.get('bank') || undefined,
+          accountNo: qs.get('account') || undefined,
+        };
+      }
       return { k: m[1] as 'client' | 'project' | 'task', id: Number(m[2]) };
     }
     return { k: 'home' };
@@ -52,28 +69,30 @@ export default function App() {
     else setView({ k: 'home' });
   };
 
-  /** 上下文切换器选中任务 → 交易页过滤到该任务 */
-  const pickTask = (id: number | null) => {
-    const brief = id == null ? null : recentTasks.find((t) => t.id === id) ?? null;
-    setCtxTask(brief);
-    setView({ k: 'tx', taskId: id ?? undefined });
+  /** 顶栏任务名、或菜单里点一个任务：回到该任务页，不留在交易页。 */
+  const openTask = (id: number) => {
+    const brief = recentTasks.find((t) => t.id === id);
+    if (brief) setCtxTask(brief);
+    setView({ k: 'task', id });
+    void api.recentTasks().then(setRecentTasks).catch(() => undefined);
   };
 
-  /** 任务页「查看交易」：进入交易页并设为当前任务上下文 */
-  const browseTaskTx = (taskId: number) => {
-    const brief = recentTasks.find((t) => t.id === taskId);
-    if (brief) setCtxTask(brief);
-    setView({ k: 'tx', taskId });
-    void api.recentTasks().then(setRecentTasks).catch(() => undefined);
+  const pickTask = (id: number | null) => {
+    if (id == null) {
+      setCtxTask(null);
+      return;
+    }
+    openTask(id);
   };
 
   // 同步 hash 便于刷新/分享定位
   const syncHash = (v: View) => {
     if (v.k === 'client' || v.k === 'project' || v.k === 'task') location.hash = `/${v.k}/${v.id}`;
-    else if (v.k === 'tx' && (v.taskId || v.fileId)) {
+    else if (v.k === 'tx' && (v.taskId || v.bank || v.accountNo)) {
       const qs = new URLSearchParams();
       if (v.taskId) qs.set('task', String(v.taskId));
-      if (v.fileId) qs.set('file', String(v.fileId));
+      if (v.bank) qs.set('bank', v.bank);
+      if (v.accountNo) qs.set('account', v.accountNo);
       location.hash = `/tx?${qs.toString()}`;
     }
   };
@@ -128,6 +147,8 @@ export default function App() {
         contextTask={ctxTask}
         recentTasks={chromeTasks}
         onPickTask={pickTask}
+        onOpenTask={(id) => openTask(id)}
+        taskTabActive={view.k === 'task'}
       />
       <main className="page-main">
         {view.k === 'home' && <HomePage onOpenClient={(id) => setView({ k: 'client', id })} />}
@@ -149,13 +170,24 @@ export default function App() {
           <TaskPage
             taskId={view.id}
             onBackToProject={(projectId) => setView({ k: 'project', id: projectId })}
-            onBrowseTx={(taskId) => browseTaskTx(taskId)}
-            onBrowseFileTx={(taskId, fileId) => setView({ k: 'tx', taskId, fileId })}
+            onBrowseFile={(file) =>
+              setView({
+                k: 'tx',
+                taskId: view.id,
+                bank: file.bank,
+                accountNo: file.accountNo,
+              })
+            }
             onChangedTasks={() => void api.recentTasks().then(setRecentTasks).catch(() => undefined)}
           />
         )}
         {view.k === 'tx' && (
-          <TransactionsPage key={view.taskId ?? 'all'} initialTaskId={view.taskId} initialFileId={view.fileId} />
+          <TransactionsPage
+            key={`${view.taskId ?? 'all'}-${view.bank ?? ''}-${view.accountNo ?? ''}`}
+            initialTaskId={view.taskId}
+            initialBank={view.bank}
+            initialAccountNo={view.accountNo}
+          />
         )}
         {view.k === 'review' && <ReviewQueue taskId={ctxTask?.id} />}
         {view.k === 'rules' && (
