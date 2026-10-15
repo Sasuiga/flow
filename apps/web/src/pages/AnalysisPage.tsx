@@ -431,7 +431,7 @@ function ExternalPay({ result }: { result: FlowResult }) {
   const [minText, setMinText] = useState('');
   const min = Number(minText.replace(/,/g, '').trim());
   const active = minText.trim() !== '' && Number.isFinite(min) && min > 0;
-  const lines = useMemo(() => (active ? externalAtLeast(result, min) : result.externalLines), [result, active, min]);
+  const lines = useMemo(() => (active ? externalAtLeast(result, min * 10_000) : result.externalLines), [result, active, min]);
   return (
     <section className="page-section">
       <div className="page-header">
@@ -447,7 +447,7 @@ function ExternalPay({ result }: { result: FlowResult }) {
             placeholder="金额"
             onChange={(e) => setMinText(e.target.value)}
           />
-          元
+          万元
         </label>
       </div>
       {lines.length > 0 ? (
