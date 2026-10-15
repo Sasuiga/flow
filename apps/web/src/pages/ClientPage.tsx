@@ -74,35 +74,6 @@ export function ClientPage({ clientId, onBack, onOpenProject }: ClientPageProps)
       </nav>
 
       {error ? <div className="flow-error">{error}</div> : null}
-      {client ? (
-        <div className="entity-bar">
-          <div className="entity-bar-main">
-            <div className="entity-bar-title">
-              {client.name}
-              {client.dirMissing ? <span className="chip chip-danger">目录丢失</span> : null}
-              {client.status === 'archived' ? <span className="chip chip-muted">已归档</span> : null}
-            </div>
-            <div className="entity-bar-path">
-              <span className="path-chip" title={client.folderPath}>
-                {client.folderPath}
-              </span>
-            </div>
-          </div>
-          <div className="page-header-actions" style={{ marginTop: 4 }}>
-            <button
-              className="secondary-button"
-              disabled
-              title={client.dirMissing ? '目录丢失，先重新选择或恢复目录' : ''}
-              onClick={() => void api.openClientFolder(client.id).catch(() => undefined)}
-            >
-              打开文件夹
-            </button>
-            <button className="secondary-button" onClick={() => void doRemoveClientConfirm()}>
-              删除客户
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
@@ -180,15 +151,4 @@ export function ClientPage({ clientId, onBack, onOpenProject }: ClientPageProps)
       ) : null}
     </div>
   );
-
-  async function doRemoveClientConfirm() {
-    const ok = await confirmDialog(`删除客户「${client?.name}」？其下项目与任务的登记一并删除（目录文件不动）。`, {
-      title: '删除客户',
-      danger: true,
-    });
-    if (ok) {
-      await api.deleteClient(client!.id).catch((e) => setError((e as Error).message));
-      onBack();
-    }
-  }
 }

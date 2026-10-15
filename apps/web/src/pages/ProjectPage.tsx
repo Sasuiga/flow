@@ -96,34 +96,6 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
 
-      {project ? (
-        <div className="entity-bar">
-          <div className="entity-bar-main">
-            <div className="entity-bar-title">
-              {project.name}
-              {project.dirMissing ? <span className="chip chip-danger">目录丢失</span> : null}
-            </div>
-            <div className="entity-bar-path">
-              <span className="path-chip" title={project.folderPath}>
-                {project.folderPath}
-              </span>
-            </div>
-          </div>
-          <div className="page-header-actions" style={{ marginTop: 4 }}>
-            <button
-              className="secondary-button"
-              disabled={project.dirMissing}
-              onClick={() => void api.openProjectFolder(project.id).catch(() => undefined)}
-            >
-              打开文件夹
-            </button>
-            <button className="secondary-button" onClick={() => void doRemoveProject()}>
-              删除项目
-            </button>
-          </div>
-        </div>
-      ) : null}
-
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>报告期任务</h1>
@@ -211,19 +183,4 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       ) : null}
     </div>
   );
-
-  async function doRemoveProject() {
-    const p = project!;
-    const ok = await confirmDialog(`删除融资项目「${p.name}」？其下报告期任务的登记一并删除（目录文件不动）。`, {
-      title: '删除项目',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.deleteProject(p.id);
-      onBackToClient(detail!.client.id);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
 }

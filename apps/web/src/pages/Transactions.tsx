@@ -79,7 +79,6 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>交易</h1>
-          <p>按流水原文顺序排列（同一份 PDF 从上到下）。余额对不上只记在复核提示里，不改金额和方向。</p>
         </div>
       </div>
 
