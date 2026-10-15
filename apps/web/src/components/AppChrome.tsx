@@ -75,13 +75,13 @@ export function AppChrome({ active, onNav, contextTask, recentTasks = [], onPick
         <button
           ref={triggerRef}
           type="button"
-          className={`app-chrome-tab ctx-tab${contextTask ? '' : ' disabled'}`}
-          onClick={contextTask ? toggleMenu : undefined}
-          title={contextTask ? '切换当前任务' : '从最近任务中选择'}
+          className={`app-chrome-tab ctx-tab${contextTask ? '' : ' empty'}`}
+          onClick={toggleMenu}
+          title={contextTask ? `${contextTask.clientName} / ${contextTask.projectName}` : '从最近任务中选择'}
         >
           <FolderOpen size={13} strokeWidth={2} />
           <span className="ctx-tab-label">{contextTask ? contextTask.name : '当前任务'}</span>
-          {contextTask ? <ChevronDown size={12} strokeWidth={2} /> : null}
+          <ChevronDown size={12} strokeWidth={2} />
         </button>
         {menuOpen && menuPos ? (
           <div className="ctx-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">

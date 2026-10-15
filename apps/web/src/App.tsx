@@ -85,13 +85,47 @@ export default function App() {
     void api.recentTasks().then(setRecentTasks).catch(() => undefined);
   }, []);
 
+  // 打开任务页 / 带任务过滤的交易页时，顶栏跟着显示这个任务。
+  // 之前只有点「查看交易」或从菜单点选才会写入，所以进了任务页仍停在「当前任务」。
+  useEffect(() => {
+    const taskId = view.k === 'task' ? view.id : view.k === 'tx' ? view.taskId : undefined;
+    if (taskId == null) return;
+    const known = recentTasks.find((t) => t.id === taskId);
+    if (known) {
+      setCtxTask((cur) => (cur?.id === known.id ? cur : known));
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getTask(taskId)
+      .then((d) => {
+        if (cancelled) return;
+        setCtxTask({
+          id: d.task.id,
+          name: d.task.name,
+          clientName: d.client.name,
+          projectName: d.project.name,
+          fileCount: d.task.fileCount,
+          txCount: d.task.txCount,
+          updatedAt: d.task.updatedAt,
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [view, recentTasks]);
+
+  const chromeTasks =
+    ctxTask && !recentTasks.some((t) => t.id === ctxTask.id) ? [ctxTask, ...recentTasks] : recentTasks;
+
   return (
     <div className="flow-root">
       <AppChrome
         active={chromeActive}
         onNav={nav}
         contextTask={ctxTask}
-        recentTasks={recentTasks}
+        recentTasks={chromeTasks}
         onPickTask={pickTask}
       />
       <main className="page-main">

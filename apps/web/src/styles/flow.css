@@ -989,16 +989,12 @@ select.input {
   max-width: 220px;
 }
 
-.ctx-tab:not(.disabled) {
+.ctx-tab:not(.empty) {
   color: var(--ui-text);
 }
 
-.ctx-tab.disabled {
-  opacity: 0.6;
-  cursor: default;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
+.ctx-tab.empty {
+  color: var(--ui-muted);
 }
 
 .ctx-tab-label {
