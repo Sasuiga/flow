@@ -1,5 +1,6 @@
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { AutoComplete } from 'antd';
 import { CreateEntityInput, FundUse, ProjectAccount, ProjectView, TaskView } from '@flow/shared';
 import { api, ProjectDetail as ProjectDetailData } from '../api';
 import { CreateDialog } from '../components/CreateDialog';
@@ -7,6 +8,43 @@ import { ListRow, ListRowHeader } from '../components/ListRow';
 import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
 import { formatDate } from '../lib/format';
+
+function filledChoices(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  for (const raw of values) {
+    const v = raw?.trim();
+    if (v) seen.add(v);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+}
+
+function SuggestInput({
+  value,
+  onChange,
+  choices,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  choices: string[];
+  autoFocus?: boolean;
+}) {
+  return (
+    <AutoComplete
+      className="acct-combo"
+      value={value}
+      autoFocus={autoFocus}
+      options={choices.map((v) => ({ value: v }))}
+      onChange={onChange}
+      filterOption={(input, option) =>
+        String(option?.value ?? '')
+          .toLocaleLowerCase()
+          .includes(input.trim().toLocaleLowerCase())
+      }
+      styles={{ popup: { root: { zIndex: 2000 } } }}
+    />
+  );
+}
 
 type ProjectPageProps = {
   projectId: number;
@@ -400,11 +438,20 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         >
           <div className="field">
             <span className="field-label">账户主体</span>
-            <input className="input" value={holder} autoFocus onChange={(e) => setHolder(e.target.value)} />
+            <SuggestInput
+              value={holder}
+              autoFocus
+              choices={filledChoices((detail?.accounts ?? []).map((a) => a.holder))}
+              onChange={setHolder}
+            />
           </div>
           <div className="field">
             <span className="field-label">开户行</span>
-            <input className="input" value={acctBank} onChange={(e) => setAcctBank(e.target.value)} />
+            <SuggestInput
+              value={acctBank}
+              choices={filledChoices((detail?.accounts ?? []).map((a) => a.bank))}
+              onChange={setAcctBank}
+            />
           </div>
           <div className="field">
             <span className="field-label">账号</span>

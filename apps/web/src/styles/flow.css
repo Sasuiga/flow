@@ -1522,8 +1522,23 @@ select.input {
   align-items: center;
 }
 
-.page-section {
-  margin-bottom: 28px;
+.acct-combo {
+  width: 100%;
+}
+
+.acct-combo.ant-select .ant-select-selector {
+  min-height: 32px;
+  padding: 0 10px !important;
+  border-color: var(--ui-border) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: var(--ui-panel) !important;
+  box-shadow: none !important;
+}
+
+.acct-combo.ant-select-focused .ant-select-selector {
+  border-color: transparent !important;
+  outline: 2px solid var(--ui-focus-ring);
+  outline-offset: 1px;
 }
 
 .review-form .input {
