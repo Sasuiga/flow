@@ -93,10 +93,6 @@ export function HomePage({ onOpenClient }: HomeProps) {
       {!clients ? null : clients.length === 0 ? (
         <div className="flow-empty">
           <h3>还没有客户</h3>
-          <p>
-            创建客户后，flow 会创建客户目录（如 <code>xx股份有限公司</code>）。
-            融资项目（IPO/再融资/可转债）与报告期任务都建在它下面。
-          </p>
           <div className="flow-empty-actions">
             <button className="primary-button" onClick={() => setCreateOpen(true)}>
               <Plus size={15} /> 新建客户
