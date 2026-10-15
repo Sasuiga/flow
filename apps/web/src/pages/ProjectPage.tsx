@@ -239,63 +239,78 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
 
-      {detail ? (
-        <section className="page-section">
-          <div className="page-header" style={{ marginBottom: 12 }}>
-            <div>
-              <h1 style={{ fontSize: 18, marginBottom: 2 }}>募资专户</h1>
-            </div>
-            <div className="page-header-actions">
-              <button className="primary-button" disabled={!project} onClick={() => openAccount('new')}>
-                <Plus size={15} /> 新建募资专户
+      <section className="page-section">
+        <div className="page-header" style={{ marginBottom: 12 }}>
+          <div>
+            <h1 style={{ fontSize: 18, marginBottom: 2 }}>报告期任务</h1>
+            <p>一个报告期/一类分析一个任务；流水 PDF 放任务目录，报告输出到任务目录 flow-output/</p>
+          </div>
+          <div className="page-header-actions">
+            <button className="primary-button" disabled={!project} onClick={() => setCreateOpen(true)}>
+              <Plus size={15} /> 新建报告期任务
+            </button>
+          </div>
+        </div>
+
+        {detail && detail.tasks.length === 0 ? (
+          <div className="flow-empty">
+            <h3>还没有报告期任务</h3>
+            <p>
+              创建报告期任务（如「2024 年度募资流水分析」），把该报告期的银行流水 PDF 放进任务目录，即可开始解析。
+            </p>
+            <div className="flow-empty-actions">
+              <button className="primary-button" onClick={() => setCreateOpen(true)}>
+                <Plus size={15} /> 新建报告期任务
               </button>
             </div>
           </div>
-          {detail.accounts.length === 0 ? (
-            <div className="flow-empty">
-              <h3>还没有募资专户</h3>
-              <p>先录入账户主体、开户行、账号和开户时间。各期流水会按这份清单核对是否到齐。</p>
-              <div className="flow-empty-actions">
-                <button className="primary-button" onClick={() => openAccount('new')}>
-                  <Plus size={15} /> 新建募资专户
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="acct-table">
-              <ListRowHeader
-                withMenu
-                cols={[
-                  { label: '账户主体', cls: 'acct-col-holder' },
-                  { label: '开户行', cls: 'acct-col-bank' },
-                  { label: '账号', cls: 'acct-col-no' },
-                  { label: '开户时间', cls: 'acct-col-date' },
-                  { label: '募投项目', cls: 'acct-col-use' },
+        ) : null}
+
+        {detail && detail.tasks.length > 0 ? (
+          <>
+            <ListRowHeader
+              withMenu
+              cols={[
+                { label: '创建日期', cls: 'list-row-col-created' },
+                { label: '任务名称', cls: 'list-row-col-title' },
+                { label: '文件', cls: 'list-row-col-count' },
+                { label: '交易', cls: 'list-row-col-count' },
+                { label: '状态', cls: 'list-row-col-status' },
+              ]}
+            />
+            {detail.tasks.map((t) => (
+              <ListRow
+                key={t.id}
+                onClick={() => onOpenTask(t.id)}
+                title={t.name}
+                menuItems={[
+                  {
+                    label: '重新扫描',
+                    disabled: refreshingId === t.id,
+                    onClick: () => void doRefresh(t),
+                  },
+                  { label: '打开文件夹', onClick: () => void api.openTaskFolder(t.id).catch(() => undefined) },
+                  { label: '删除', danger: true, onClick: () => void doRemoveTask(t) },
                 ]}
-              />
-              {detail.accounts.map((a) => (
-                <ListRow
-                  key={a.id}
-                  title={a.holder}
-                  onClick={() => openAccount(a)}
-                  menuItems={[
-                    { label: '修改', onClick: () => openAccount(a) },
-                    { label: '删除', danger: true, onClick: () => void removeAccount(a) },
-                  ]}
-                >
-                  <span className="acct-col-holder" title={a.holder}>{a.holder}</span>
-                  <span className="acct-col-bank" title={a.bank}>{a.bank}</span>
-                  <span className="acct-col-no" title={a.accountNo}>{a.accountNo}</span>
-                  <span className="acct-col-date">{a.openedOn || '—'}</span>
-                  <span className="acct-col-use" title={a.fundUse || undefined}>{a.fundUse || '—'}</span>
-                </ListRow>
-              ))}
-              </div>
-            </>
-          )}
-        </section>
-      ) : null}
+              >
+                <span className="list-row-col-created">{formatDate(t.createdAt)}</span>
+                <span className="list-row-col-title">
+                  {refreshingId === t.id ? <RefreshCw size={12} className="spin" style={{ marginRight: 6 }} /> : null}
+                  {t.name}
+                </span>
+                <span className={`list-row-col-count${t.fileCount === 0 ? ' empty' : ''}`}>{t.fileCount}</span>
+                <span className={`list-row-col-count${t.txCount === 0 ? ' empty' : ''}`}>{t.txCount}</span>
+                <span className="list-row-col-status">
+                  <span className="list-row-chip">
+                    {t.dirMissing ? <span className="chip chip-danger">目录丢失</span> : null}
+                    {t.fileCount > 0 && t.txCount > 0 ? <span className="chip chip-primary">{t.txCount} 笔</span> : null}
+                  </span>
+                </span>
+              </ListRow>
+            ))}
+          </>
+        ) : null}
+      </section>
 
       {detail ? (
         <section className="page-section">
@@ -356,77 +371,60 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         </section>
       ) : null}
 
-      <div className="page-header" style={{ marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 18, marginBottom: 2 }}>报告期任务</h1>
-          <p>一个报告期/一类分析一个任务；流水 PDF 放任务目录，报告输出到任务目录 flow-output/</p>
-        </div>
-        <div className="page-header-actions">
-          <button className="primary-button" disabled={!project} onClick={() => setCreateOpen(true)}>
-            <Plus size={15} /> 新建报告期任务
-          </button>
-        </div>
-      </div>
-
-      {detail && detail.tasks.length === 0 ? (
-        <div className="flow-empty">
-          <h3>还没有报告期任务</h3>
-          <p>
-            创建报告期任务（如「2024 年度募资流水分析」），把该报告期的银行流水 PDF 放进任务目录，即可开始解析。
-          </p>
-          <div className="flow-empty-actions">
-            <button className="primary-button" onClick={() => setCreateOpen(true)}>
-              <Plus size={15} /> 新建报告期任务
-            </button>
-          </div>
-        </div>
-      ) : null}
-
       {detail ? (
-        detail.tasks.length > 0 ? (
-          <>
-            <ListRowHeader
-              withMenu
-              cols={[
-                { label: '创建日期', cls: 'list-row-col-created' },
-                { label: '任务名称', cls: 'list-row-col-title' },
-                { label: '文件', cls: 'list-row-col-count' },
-                { label: '交易', cls: 'list-row-col-count' },
-                { label: '状态', cls: 'list-row-col-status' },
-              ]}
-            />
-            {detail.tasks.map((t) => (
-              <ListRow
-                key={t.id}
-                onClick={() => onOpenTask(t.id)}
-                title={t.name}
-                menuItems={[
-                  {
-                    label: '重新扫描',
-                    disabled: refreshingId === t.id,
-                    onClick: () => void doRefresh(t),
-                  },
-                  { label: '打开文件夹', onClick: () => void api.openTaskFolder(t.id).catch(() => undefined) },
-                  { label: '删除', danger: true, onClick: () => void doRemoveTask(t) },
+        <section className="page-section">
+          <div className="page-header" style={{ marginBottom: 12 }}>
+            <div>
+              <h1 style={{ fontSize: 18, marginBottom: 2 }}>募资专户</h1>
+            </div>
+            <div className="page-header-actions">
+              <button className="primary-button" disabled={!project} onClick={() => openAccount('new')}>
+                <Plus size={15} /> 新建募资专户
+              </button>
+            </div>
+          </div>
+          {detail.accounts.length === 0 ? (
+            <div className="flow-empty">
+              <h3>还没有募资专户</h3>
+              <p>先录入账户主体、开户行、账号和开户时间。各期流水会按这份清单核对是否到齐。</p>
+              <div className="flow-empty-actions">
+                <button className="primary-button" onClick={() => openAccount('new')}>
+                  <Plus size={15} /> 新建募资专户
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="acct-table">
+              <ListRowHeader
+                withMenu
+                cols={[
+                  { label: '账户主体', cls: 'acct-col-holder' },
+                  { label: '开户行', cls: 'acct-col-bank' },
+                  { label: '账号', cls: 'acct-col-no' },
+                  { label: '开户时间', cls: 'acct-col-date' },
+                  { label: '募投项目', cls: 'acct-col-use' },
                 ]}
-              >
-                <span className="list-row-col-created">{formatDate(t.createdAt)}</span>
-                <span className="list-row-col-title">
-                  {refreshingId === t.id ? <RefreshCw size={12} className="spin" style={{ marginRight: 6 }} /> : null}
-                  {t.name}
-                </span>
-                <span className={`list-row-col-count${t.fileCount === 0 ? ' empty' : ''}`}>{t.fileCount}</span>
-                <span className={`list-row-col-count${t.txCount === 0 ? ' empty' : ''}`}>{t.txCount}</span>
-                <span className="list-row-col-status">
-                  <span className="list-row-chip">
-                    {t.dirMissing ? <span className="chip chip-danger">目录丢失</span> : null}
-                    {t.fileCount > 0 && t.txCount > 0 ? <span className="chip chip-primary">{t.txCount} 笔</span> : null}
-                  </span>
-                </span>
-              </ListRow>
-            ))}
-          </>
-        ) : null
+              />
+              {detail.accounts.map((a) => (
+                <ListRow
+                  key={a.id}
+                  title={a.holder}
+                  onClick={() => openAccount(a)}
+                  menuItems={[
+                    { label: '修改', onClick: () => openAccount(a) },
+                    { label: '删除', danger: true, onClick: () => void removeAccount(a) },
+                  ]}
+                >
+                  <span className="acct-col-holder" title={a.holder}>{a.holder}</span>
+                  <span className="acct-col-bank" title={a.bank}>{a.bank}</span>
+                  <span className="acct-col-no" title={a.accountNo}>{a.accountNo}</span>
+                  <span className="acct-col-date">{a.openedOn || '—'}</span>
+                  <span className="acct-col-use" title={a.fundUse || undefined}>{a.fundUse || '—'}</span>
+                </ListRow>
+              ))}
+            </div>
+          )}
+        </section>
       ) : null}
 
       {acctEdit ? (
