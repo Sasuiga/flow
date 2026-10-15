@@ -1,5 +1,5 @@
 import { MoreHorizontal } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 export type ListRowMenuItem = {
   label: string;
@@ -28,8 +28,28 @@ export function ListRow({ active, disabled, menuItems, onClick, title, children 
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | undefined>();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const hasMenu = Boolean(menuItems?.length);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setMenuOpen(false);
+      const swallow = (ev: Event) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        document.removeEventListener('click', swallow, true);
+      };
+      document.addEventListener('click', swallow, true);
+      window.setTimeout(() => document.removeEventListener('click', swallow, true), 0);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [menuOpen]);
 
   function openMenu() {
     const rect = triggerRef.current?.getBoundingClientRect();
@@ -75,7 +95,7 @@ export function ListRow({ active, disabled, menuItems, onClick, title, children 
             <MoreHorizontal size={16} />
           </button>
           {menuOpen && menuPos ? (
-            <div className="list-row-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">
+            <div ref={menuRef} className="list-row-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">
               {menuItems!.map((item) => (
                 <button
                   key={item.label}
