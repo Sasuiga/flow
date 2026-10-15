@@ -109,50 +109,7 @@ transactionsRouter.patch('/:id', (req, res) => {
 
 transactionsRouter.get('/', (req, res) => {
   const q = req.query as unknown as Record<string, string | undefined>;
-  const where: string[] = [];
-  const args: (string | number)[] = [];
-  if (q.taskId) {
-    where.push('f.task_id = ?');
-    args.push(Number(q.taskId));
-  }
-  if (q.fileId) {
-    where.push('f.id = ?');
-    args.push(Number(q.fileId));
-  }
-  if (q.bank) {
-    where.push('f.bank = ?');
-    args.push(q.bank);
-  }
-  if (q.accountNo) {
-    where.push('f.account_no LIKE ?');
-    args.push(`%${q.accountNo}%`);
-  }
-  if (q.from) {
-    where.push('t.date >= ?');
-    args.push(q.from);
-  }
-  if (q.to) {
-    where.push('t.date <= ?');
-    args.push(q.to);
-  }
-  if (q.counterparty) {
-    where.push('t.counterparty LIKE ?');
-    args.push(`%${q.counterparty}%`);
-  }
-  if (q.q) {
-    where.push('t.summary LIKE ?');
-    args.push(`%${q.q}%`);
-  }
-  if (q.status) {
-    where.push('t.status = ?');
-    args.push(q.status);
-  }
-  if (q.category === '__none__') where.push('t.category IS NULL');
-  else if (q.category) {
-    where.push('t.category = ?');
-    args.push(q.category);
-  }
-  const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  const { whereSql, args } = buildWhere(q);
   const sort =
     q.sort === 'date_asc'
       ? 'ORDER BY t.date IS NULL, t.date ASC, f.rel_path, t.page, t.line_no, t.id'
@@ -182,16 +139,25 @@ transactionsRouter.get('/', (req, res) => {
   res.json(result);
 });
 
-/** 过滤器选项：任务（带层级名）/ 银行 / 账户 / 已用分类 */
-transactionsRouter.get('/options', (_req, res) => {
-  const taskRows = (
-    db.prepare(
-      `SELECT tk.id, tk.name, c.name AS client_name, p.name AS project_name,
-              (SELECT COALESCE(SUM(f2.tx_count), 0) FROM files f2 WHERE f2.task_id = tk.id) AS tx_count
-       FROM tasks tk JOIN projects p ON p.id = tk.project_id JOIN clients c ON c.id = p.client_id
-       ORDER BY tk.updated_at DESC`,
-    ).all() as Array<Record<string, unknown>>
-  );
+/** 过滤器选项。每一项都按其余条件收窄：选了银行，账户只剩这家银行的账号。 */
+transactionsRouter.get('/options', (req, res) => {
+  const q = req.query as unknown as Record<string, string | undefined>;
+  const from = `
+FROM transactions t
+JOIN files f ON f.id = t.file_id
+JOIN tasks tk ON tk.id = f.task_id
+JOIN projects p ON p.id = tk.project_id
+JOIN clients c ON c.id = p.client_id`;
+
+  const taskWhere = buildWhere(q, ['taskId']);
+  const taskRows = db
+    .prepare(
+      `SELECT tk.id, tk.name, c.name AS client_name, p.name AS project_name, COUNT(*) AS tx_count
+       ${from}${taskWhere.whereSql}
+       GROUP BY tk.id
+       ORDER BY MAX(tk.updated_at) DESC`,
+    )
+    .all(...taskWhere.args) as Array<Record<string, unknown>>;
   const tasks = taskRows.map((t) => ({
     id: Number(t.id),
     name: String(t.name),
@@ -199,14 +165,94 @@ transactionsRouter.get('/options', (_req, res) => {
     projectName: String(t.project_name),
     txCount: Number(t.tx_count),
   }));
-  const banks = (db.prepare('SELECT DISTINCT bank FROM files WHERE bank IS NOT NULL AND bank != \'\' ORDER BY bank').all() as { bank: string }[]).map((r) => r.bank);
-  const accounts = (db.prepare('SELECT DISTINCT account_no FROM files WHERE account_no IS NOT NULL AND account_no != \'\' ORDER BY account_no').all() as { account_no: string }[]).map((r) => r.account_no);
+
+  const bankWhere = buildWhere(q, ['bank']);
+  const banks = (
+    db
+      .prepare(
+        `SELECT DISTINCT f.bank AS bank ${from}${andWhere(bankWhere.whereSql, "f.bank IS NOT NULL AND f.bank != ''")} ORDER BY f.bank`,
+      )
+      .all(...bankWhere.args) as { bank: string }[]
+  ).map((r) => r.bank);
+
+  const accountWhere = buildWhere(q, ['accountNo']);
+  const accounts = (
+    db
+      .prepare(
+        `SELECT DISTINCT f.account_no AS account_no ${from}${andWhere(accountWhere.whereSql, "f.account_no IS NOT NULL AND f.account_no != ''")} ORDER BY f.account_no`,
+      )
+      .all(...accountWhere.args) as { account_no: string }[]
+  ).map((r) => r.account_no);
+
+  const categoryWhere = buildWhere(q, ['category']);
   const categories = (
-    db.prepare('SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL AND category != \'\' ORDER BY category').all() as { category: string }[]
+    db
+      .prepare(
+        `SELECT DISTINCT t.category AS category ${from}${andWhere(categoryWhere.whereSql, "t.category IS NOT NULL AND t.category != ''")} ORDER BY t.category`,
+      )
+      .all(...categoryWhere.args) as { category: string }[]
   ).map((r) => r.category);
+
   const options: TxOptions = { tasks, banks, accounts, categories };
   res.json(options);
 });
+
+/** 交易列表和筛选项共用。omit 掉的字段不参与约束，这样当前下拉仍能改选。 */
+function buildWhere(
+  q: Record<string, string | undefined>,
+  omit: string[] = [],
+): { whereSql: string; args: (string | number)[] } {
+  const skip = new Set(omit);
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  const has = (k: string) => !skip.has(k) && q[k] !== undefined && q[k] !== '';
+  if (has('taskId')) {
+    where.push('f.task_id = ?');
+    args.push(Number(q.taskId));
+  }
+  if (has('fileId')) {
+    where.push('f.id = ?');
+    args.push(Number(q.fileId));
+  }
+  if (has('bank')) {
+    where.push('f.bank = ?');
+    args.push(q.bank!);
+  }
+  if (has('accountNo')) {
+    where.push('f.account_no LIKE ?');
+    args.push(`%${q.accountNo}%`);
+  }
+  if (has('from')) {
+    where.push('t.date >= ?');
+    args.push(q.from!);
+  }
+  if (has('to')) {
+    where.push('t.date <= ?');
+    args.push(q.to!);
+  }
+  if (has('counterparty')) {
+    where.push('t.counterparty LIKE ?');
+    args.push(`%${q.counterparty}%`);
+  }
+  if (has('q')) {
+    where.push('t.summary LIKE ?');
+    args.push(`%${q.q}%`);
+  }
+  if (has('status')) {
+    where.push('t.status = ?');
+    args.push(q.status!);
+  }
+  if (!skip.has('category') && q.category === '__none__') where.push('t.category IS NULL');
+  else if (has('category')) {
+    where.push('t.category = ?');
+    args.push(q.category!);
+  }
+  return { whereSql: where.length ? ` WHERE ${where.join(' AND ')}` : '', args };
+}
+
+function andWhere(whereSql: string, extra: string): string {
+  return whereSql ? `${whereSql} AND ${extra}` : ` WHERE ${extra}`;
+}
 
 /* ---------- 文件：解析/重解析/删登记 ---------- */
 

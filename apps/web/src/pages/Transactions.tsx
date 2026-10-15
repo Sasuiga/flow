@@ -40,8 +40,65 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
   const seq = useRef(0);
 
   useEffect(() => {
-    void api.txOptions().then(setOptions).catch((e) => setError((e as Error).message));
-  }, []);
+    let cancelled = false;
+    const facet: TxQuery = {
+      taskId: query.taskId,
+      fileId: query.fileId,
+      bank: query.bank,
+      accountNo: query.accountNo,
+      from: query.from,
+      to: query.to,
+      counterparty: query.counterparty,
+      q: query.q,
+      status: query.status,
+      category: query.category,
+    };
+    void api
+      .txOptions(facet)
+      .then((opts) => {
+        if (cancelled) return;
+        setOptions(opts);
+        setQuery((q) => {
+          const next = { ...q };
+          let changed = false;
+          if (q.taskId && !opts.tasks.some((t) => t.id === q.taskId)) {
+            next.taskId = undefined;
+            next.fileId = undefined;
+            changed = true;
+          }
+          if (q.bank && !opts.banks.includes(q.bank)) {
+            next.bank = undefined;
+            changed = true;
+          }
+          if (q.accountNo && !opts.accounts.includes(q.accountNo)) {
+            next.accountNo = undefined;
+            changed = true;
+          }
+          if (q.category && q.category !== '__none__' && !opts.categories.includes(q.category)) {
+            next.category = undefined;
+            changed = true;
+          }
+          return changed ? { ...next, page: 1 } : q;
+        });
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    query.taskId,
+    query.fileId,
+    query.bank,
+    query.accountNo,
+    query.from,
+    query.to,
+    query.counterparty,
+    query.q,
+    query.status,
+    query.category,
+  ]);
 
   // 导航上下文变化时同步（任务页「查看交易」→ 交易页）
   useEffect(() => {
@@ -87,7 +144,12 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
           <select
             className="input filter-control"
             value={query.taskId ?? ''}
-            onChange={(e) => patch({ taskId: e.target.value ? Number(e.target.value) : undefined, fileId: undefined })}
+            onChange={(e) =>
+              patch({
+                taskId: e.target.value ? Number(e.target.value) : undefined,
+                fileId: undefined,
+              })
+            }
           >
             <option value="">全部任务</option>
             {options.tasks.map((t) => (
@@ -99,7 +161,10 @@ export function TransactionsPage({ initialTaskId, initialFileId }: TxPageProps) 
           <select
             className="input filter-control"
             value={query.bank ?? ''}
-            onChange={(e) => patch({ bank: e.target.value || undefined })}
+            onChange={(e) => {
+              const bank = e.target.value || undefined;
+              patch(bank ? { bank, accountNo: undefined } : { bank: undefined });
+            }}
           >
             <option value="">全部银行</option>
             {options.banks.map((b) => (

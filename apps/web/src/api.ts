@@ -114,7 +114,15 @@ export const api = {
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v));
     return j<TxPageResult>(`/api/transactions?${p.toString()}`);
   },
-  txOptions: () => j<TxOptions>('/api/transactions/options'),
+  txOptions: (q: TxQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) {
+      if (k === 'page' || k === 'pageSize' || k === 'sort') continue;
+      if (v !== undefined && v !== '') p.set(k, String(v));
+    }
+    const s = p.toString();
+    return j<TxOptions>(`/api/transactions/options${s ? `?${s}` : ''}`);
+  },
   reviewQueue: (taskId?: number) =>
     j<{ rows: TxRow[]; total: number }>(`/api/transactions/review${taskId ? `?taskId=${taskId}` : ''}`),
   patchTransaction: (
