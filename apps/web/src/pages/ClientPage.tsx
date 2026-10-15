@@ -75,6 +75,7 @@ export function ClientPage({ clientId, onBack, onOpenProject }: ClientPageProps)
 
       {error ? <div className="flow-error">{error}</div> : null}
 
+      <section className="page-section">
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>融资项目</h1>
@@ -136,6 +137,7 @@ export function ClientPage({ clientId, onBack, onOpenProject }: ClientPageProps)
           </>
         ) : null
       ) : null}
+      </section>
 
       {createOpen && client ? (
         <CreateDialog

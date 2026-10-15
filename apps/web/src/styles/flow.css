@@ -236,6 +236,28 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 
+.page-section {
+  margin-bottom: 16px;
+  padding: 6px 6px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-panel);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+.page-section > .page-header {
+  margin: 6px 10px 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.page-section .flow-empty {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 28px 16px 20px;
+}
+
 /* 面包屑（客户 → 项目 → 任务 下钻） */
 .breadcrumb {
   display: flex;
@@ -284,7 +306,7 @@ select:focus-visible {
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius);
   background: var(--ui-panel);
-  box-shadow: var(--ui-shadow-lg);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
 }
 
 .entity-bar-main {

@@ -213,6 +213,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
         <AccountCoverage accounts={detail.accounts} files={detail.files} />
       ) : null}
 
+      <section className="page-section">
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>流水文件</h1>
@@ -294,6 +295,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
           </>
         )
       ) : null}
+      </section>
     </div>
   );
 }

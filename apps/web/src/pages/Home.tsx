@@ -72,6 +72,7 @@ export function HomePage({ onOpenClient }: HomeProps) {
 
   return (
     <div className="page">
+      <section className="page-section">
       <div className="page-header">
         <div>
           <h1>客户</h1>
@@ -136,6 +137,7 @@ export function HomePage({ onOpenClient }: HomeProps) {
           ))}
         </>
       )}
+      </section>
 
       {createOpen ? (
         <CreateDialog
