@@ -4,13 +4,6 @@ import { FlowLine, FlowLink, FlowNode, FlowPartyLine, FlowResponse, FlowResult, 
 import { api } from '../api';
 import { formatDateTime, formatMoney } from '../lib/format';
 
-const COLOR: Record<FlowLink['kind'], string> = {
-  dedicated: '#3d5ccc',
-  own: '#c2410c',
-  external: '#64748b',
-  treasury: '#0f766e',
-};
-
 function compactMoney(n: number): string {
   const v = Math.abs(n);
   const trim = (x: number) => {
@@ -108,8 +101,7 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
       <section className="page-section">
         <div className="page-header">
           <div>
-            <h1 style={{ fontSize: 18, marginBottom: 2 }}>资金流向</h1>
-            <p>{task ? `${task.clientName} / ${task.projectName} / ${task.name}` : '按当前任务的流水'}</p>
+            <h1 style={{ fontSize: 18, marginBottom: 0 }}>资金流向</h1>
           </div>
           {task && result ? (
             <div className="page-header-actions">
@@ -213,12 +205,6 @@ function FlowTimeline({ result }: { result: FlowResult }) {
 
   return (
     <div className="tl">
-      <div className="flow-legend">
-        <span><i style={{ background: COLOR.dedicated }} />专户间</span>
-        <span><i style={{ background: COLOR.own }} />客户其他账户</span>
-        <span><i style={{ background: COLOR.external }} />对外</span>
-        <span><i style={{ background: COLOR.treasury }} />现金管理</span>
-      </div>
       <div className="tl-bar">
         <button type="button" className="secondary-button" onClick={() => pick(prevTrade)} disabled={prevTrade < 0}>前一天</button>
         <div className="tl-bar-main">
