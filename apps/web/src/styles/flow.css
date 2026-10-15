@@ -1841,9 +1841,21 @@ select.input {
 }
 
 .flow-lines-empty {
-  padding: 8px 0;
+  padding: 8px 12px 12px;
   color: var(--ui-faint);
   font-size: 12px;
+}
+
+.flow-min-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+.flow-min {
+  width: 140px;
 }
 
 .flow-sub {

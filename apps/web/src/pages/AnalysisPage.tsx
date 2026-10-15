@@ -411,16 +411,7 @@ function FlowTables({ result }: { result: FlowResult }) {
         </section>
       ) : null}
 
-      {result.externalLines.length > 0 ? (
-        <section className="page-section">
-          <div className="page-header">
-            <div>
-              <h1 style={{ fontSize: 18, marginBottom: 2 }}>对外支付</h1>
-            </div>
-          </div>
-          <PartyTable lines={result.externalLines} showGroup />
-        </section>
-      ) : null}
+      {result.externalLines.length > 0 ? <ExternalPay result={result} /> : null}
 
       {result.treasuryLines.length > 0 ? (
         <section className="page-section">
@@ -434,6 +425,73 @@ function FlowTables({ result }: { result: FlowResult }) {
       ) : null}
     </>
   );
+}
+
+function ExternalPay({ result }: { result: FlowResult }) {
+  const [minText, setMinText] = useState('');
+  const min = Number(minText.replace(/,/g, '').trim());
+  const active = minText.trim() !== '' && Number.isFinite(min) && min > 0;
+  const lines = useMemo(() => (active ? externalAtLeast(result, min) : result.externalLines), [result, active, min]);
+  return (
+    <section className="page-section">
+      <div className="page-header">
+        <div>
+          <h1 style={{ fontSize: 18, marginBottom: 0 }}>对外支付</h1>
+        </div>
+        <label className="flow-min-label">
+          不低于
+          <input
+            className="input flow-min"
+            inputMode="decimal"
+            value={minText}
+            placeholder="金额"
+            onChange={(e) => setMinText(e.target.value)}
+          />
+          元
+        </label>
+      </div>
+      {lines.length > 0 ? (
+        <PartyTable lines={lines} showGroup />
+      ) : (
+        <div className="flow-lines-empty">没有达到这个金额的交易</div>
+      )}
+    </section>
+  );
+}
+
+function externalAtLeast(result: FlowResult, min: number): FlowPartyLine[] {
+  const rows = new Map<string, FlowPartyLine>();
+  for (const m of result.moves ?? []) {
+    if (m.kind !== 'external' || m.count <= 0) continue;
+    const unit = m.amount / m.count;
+    if (unit < min) continue;
+    const src = matchExternal(m.peer, result.externalLines);
+    const name = src?.name ?? m.peer;
+    const hit = rows.get(name) ?? {
+      name,
+      accountNo: src?.accountNo,
+      count: 0,
+      outAmount: 0,
+      inAmount: 0,
+    };
+    hit.count += m.count;
+    if (m.direction === 'out') hit.outAmount += m.amount;
+    else hit.inAmount += m.amount;
+    rows.set(name, hit);
+  }
+  return [...rows.values()]
+    .map((row) => ({ ...row, grouped: row.count < 3 || row.outAmount + row.inAmount < 50_000 }))
+    .sort((a, b) => b.outAmount + b.inAmount - (a.outAmount + a.inAmount));
+}
+
+function matchExternal(peer: string, lines: FlowPartyLine[]): FlowPartyLine | undefined {
+  const exact = lines.find((l) => l.name === peer);
+  if (exact) return exact;
+  if (peer.endsWith('…')) {
+    const prefix = peer.slice(0, -1);
+    return lines.find((l) => l.name.startsWith(prefix));
+  }
+  return undefined;
 }
 
 function LineList({ lines }: { lines: FlowLine[] }) {
