@@ -355,6 +355,21 @@ export interface FlowLink {
   inBoth: number;
 }
 
+export interface FlowMove {
+  date: string;
+  accountId: string;
+  direction: 'in' | 'out';
+  amount: number;
+  count: number;
+  kind: FlowKind;
+  peer: string;
+}
+
+export interface FlowBalance {
+  accountId: string;
+  points: { date: string; balance: number }[];
+}
+
 export interface FlowPartyLine {
   name: string;
   accountNo?: string;
@@ -381,6 +396,10 @@ export interface FlowResult {
   skipped: number;
   nodes: FlowNode[];
   links: FlowLink[];
+  /** 按日、按专户的进出，含对手 */
+  moves?: FlowMove[];
+  /** 各专户日终余额 */
+  balances?: FlowBalance[];
   externalLines: FlowPartyLine[];
   treasuryLines: FlowPartyLine[];
 }

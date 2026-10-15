@@ -22,16 +22,12 @@ function compactMoney(n: number): string {
   return formatMoney(v);
 }
 
-function edgeText(l: FlowLink): string {
-  const parts: string[] = [];
-  if (l.outAmount > 0) parts.push(`支 ${compactMoney(l.outAmount)}`);
-  if (l.inAmount > 0) parts.push(`收 ${compactMoney(l.inAmount)}`);
-  if (l.outAmount > 0 && l.inAmount > 0) {
-    const net = l.outAmount - l.inAmount;
-    parts.push(`${net >= 0 ? '净付' : '净收'} ${compactMoney(Math.abs(net))}`);
-  }
-  return parts.join(' / ');
-}
+const KIND_LABEL: Record<FlowLink['kind'], string> = {
+  dedicated: '专户间',
+  own: '其他账户',
+  external: '对外',
+  treasury: '现金管理',
+};
 
 function netText(out: number, inn: number): string {
   const d = out - inn;
@@ -52,23 +48,17 @@ function nodeName(n?: FlowNode): string {
   return n.title;
 }
 
-function touches(l: FlowLink, id: string): boolean {
-  return l.from === id || l.to === id;
-}
-
 export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState<FlowResponse['status'] | ''>('');
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<FlowResult | null>(null);
-  const [focus, setFocus] = useState<string | null>(null);
 
   const apply = (res: FlowResponse) => {
     setStatus(res.status);
     setMessage(res.message ?? '');
     setResult(res.result ?? null);
-    setFocus(null);
   };
 
   useEffect(() => {
@@ -81,11 +71,15 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
       .getFlow(task.id)
       .then(async (res) => {
         if (cancel) return;
-        if (res.status === 'missing') {
-          apply(await api.runFlow(task.id, false));
+        if (res.status === 'ready' && res.result?.moves) {
+          apply(res);
           return;
         }
-        apply(res);
+        if (res.status === 'empty') {
+          apply(res);
+          return;
+        }
+        apply(await api.runFlow(task.id, true));
       })
       .catch((e: Error) => {
         if (!cancel) setError(e.message);
@@ -154,160 +148,181 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
             {result.skipped > 0 ? (
               <p className="flow-note">{result.skipped} 笔流水对不上募资专户，没有画进去。</p>
             ) : null}
-            <FlowChart result={result} focus={focus} onFocus={setFocus} />
-            <p className="flow-note">生成于 {formatDateTime(result.generatedAt)}</p>
+            {result.moves ? <FlowTimeline result={result} /> : null}
+            <p className="flow-note">生成于 {formatDateTime(result.generatedAt)} · 余额为当日最后一笔之后的余额</p>
           </>
         ) : null}
       </section>
 
-      {result ? <FlowTables result={result} focus={focus} /> : null}
+      {result ? <FlowTables result={result} /> : null}
     </div>
   );
 }
 
-function FlowChart({
-  result,
-  focus,
-  onFocus,
-}: {
-  result: FlowResult;
-  focus: string | null;
-  onFocus: (id: string | null) => void;
-}) {
-  const layout = useMemo(() => buildLayout(result), [result]);
-  const maxAmt = Math.max(1, ...result.links.map((l) => Math.max(l.outAmount, l.inAmount)));
+function eachDay(from: string, to: string): string[] {
+  const out: string[] = [];
+  let t = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(t) || Number.isNaN(end)) return [from];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  while (t <= end && out.length < 800) {
+    const d = new Date(t);
+    out.push(`${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`);
+    t += 86_400_000;
+  }
+  return out;
+}
+
+function carried(points: { date: string; balance: number }[] | undefined, day: string): number | null {
+  if (!points?.length) return null;
+  let last: number | null = null;
+  for (const p of points) {
+    if (p.date > day) break;
+    last = p.balance;
+  }
+  return last;
+}
+
+function FlowTimeline({ result }: { result: FlowResult }) {
+  const moves = result.moves ?? [];
+  const days = useMemo(() => {
+    const dates = [
+      ...moves.map((m) => m.date),
+      ...(result.balances ?? []).flatMap((b) => b.points.map((p) => p.date)),
+    ].filter(Boolean).sort();
+    if (dates.length === 0) return [];
+    return eachDay(dates[0], dates[dates.length - 1]);
+  }, [moves, result.balances]);
+  const [index, setIndex] = useState(0);
+  const day = days[Math.min(index, Math.max(days.length - 1, 0))] ?? '';
+  const accounts = useMemo(() => {
+    const weight = new Map<string, number>();
+    for (const m of moves) weight.set(m.accountId, (weight.get(m.accountId) ?? 0) + m.amount);
+    return result.nodes
+      .filter((n) => n.role === 'dedicated')
+      .sort((a, b) => (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0));
+  }, [result.nodes, moves]);
+  const dayMoves = moves.filter((m) => m.date === day);
+  const pick = (i: number) => setIndex(Math.max(0, Math.min(days.length - 1, i)));
+
   return (
-    <div className="flow-chart-wrap">
+    <div className="tl">
       <div className="flow-legend">
         <span><i style={{ background: COLOR.dedicated }} />专户间</span>
         <span><i style={{ background: COLOR.own }} />客户其他账户</span>
         <span><i style={{ background: COLOR.external }} />对外</span>
         <span><i style={{ background: COLOR.treasury }} />现金管理</span>
       </div>
-      <svg
-        className="flow-chart"
-        viewBox={`0 0 ${layout.w} ${layout.h}`}
-        role="img"
-        onClick={() => onFocus(null)}
-      >
-        <defs>
-          {(Object.keys(COLOR) as FlowLink['kind'][]).map((k) => (
-            <marker key={k} id={`arr-${k}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-              <path d="M0,0 L8,4 L0,8 Z" fill={COLOR[k]} />
-            </marker>
-          ))}
-        </defs>
-        {layout.links.map((item) => {
-          const dim = focus != null && !touches(item.link, focus);
-          const amt = Math.max(item.link.outAmount, item.link.inAmount);
-          const sw = 1.4 + 6.5 * (Math.log10(1 + amt) / Math.log10(1 + maxAmt));
-          const both = item.link.outAmount > 0 && item.link.inAmount > 0;
+      <div className="tl-bar">
+        <button type="button" className="secondary-button" onClick={() => pick(index - 1)} disabled={index <= 0}>前一天</button>
+        <div className="tl-bar-main">
+          <div className="tl-date">{day || '—'}</div>
+          <input
+            className="tl-slider"
+            type="range"
+            min={0}
+            max={Math.max(days.length - 1, 0)}
+            value={Math.min(index, Math.max(days.length - 1, 0))}
+            onChange={(e) => pick(Number(e.target.value))}
+            aria-label="时间"
+          />
+          <div className="tl-ends">
+            <span>{days[0]}</span>
+            <span>{dayMoves.length === 0 ? '这一天没有进出' : `这一天 ${dayMoves.length} 笔`}</span>
+            <span>{days[days.length - 1]}</span>
+          </div>
+        </div>
+        <button type="button" className="secondary-button" onClick={() => pick(index + 1)} disabled={index >= days.length - 1}>后一天</button>
+      </div>
+      <div className="tl-rows">
+        {accounts.map((acct) => {
+          const points = result.balances?.find((b) => b.accountId === acct.id)?.points ?? [];
+          const bal = carried(points, day);
+          const prev = index > 0 ? carried(points, days[index - 1]) : null;
+          const delta = bal != null && prev != null ? bal - prev : null;
+          const mine = dayMoves.filter((m) => m.accountId === acct.id);
+          const values = days.map((d) => carried(points, d));
           return (
-            <g key={item.link.id} opacity={dim ? 0.12 : 1}>
-              <path
-                d={item.d}
-                fill="none"
-                stroke={COLOR[item.link.kind]}
-                strokeWidth={sw}
-                strokeDasharray={item.link.to.startsWith('bucket:out') || item.link.from.startsWith('bucket:out') ? '5 4' : undefined}
-                markerEnd={`url(#arr-${item.link.kind})`}
-                markerStart={both ? `url(#arr-${item.link.kind})` : undefined}
-              />
-              <text x={item.lx} y={item.ly} textAnchor="middle" className="flow-edge-label">
-                {edgeText(item.link)}
-              </text>
-            </g>
+            <div key={acct.id} className={`tl-row${mine.length ? ' active' : ''}`}>
+              <div className="tl-acct">
+                <b>{acct.title} {acct.tail}</b>
+                <span>{acct.sub}</span>
+              </div>
+              <Sparkline days={days} values={values} index={Math.min(index, days.length - 1)} onPick={pick} />
+              <div className="tl-bal">
+                <b>{bal == null ? '—' : compactMoney(bal)}</b>
+                <span>{delta == null ? '' : Math.abs(delta) < 0.005 ? '与前一日相同' : `较前一日 ${delta > 0 ? '+' : '−'}${compactMoney(Math.abs(delta))}`}</span>
+              </div>
+              {mine.length > 0 ? (
+                <ul className="tl-moves">
+                  {mine.map((m, i) => (
+                    <li key={`${m.peer}-${m.direction}-${i}`}>
+                      <em className={m.direction === 'in' ? 'in' : 'out'}>{m.direction === 'in' ? '收' : '支'}</em>
+                      <b>{compactMoney(m.amount)}{m.count > 1 ? ` · ${m.count} 笔` : ''}</b>
+                      <span className="tl-arrow">{m.direction === 'in' ? '←' : '→'}</span>
+                      <span className="tl-peer">{m.peer}</span>
+                      <i className={`tl-kind ${m.kind}`}>{KIND_LABEL[m.kind]}</i>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           );
         })}
-        {layout.nodes.map((n) => {
-          const dim = focus != null && focus !== n.node.id && !result.links.some((l) => touches(l, focus) && touches(l, n.node.id));
-          const circle = n.node.role === 'dedicated' || n.node.role === 'own';
-          return (
-            <g key={n.node.id} transform={`translate(${n.x} ${n.y})`} opacity={dim ? 0.28 : 1} onClick={(e) => { e.stopPropagation(); onFocus(focus === n.node.id ? null : n.node.id); }} style={{ cursor: 'pointer' }}>
-              {circle ? (
-                <circle r="26" className={`flow-node flow-node-${n.node.role}`} />
-              ) : (
-                <rect x="-54" y="-18" width="108" height="36" rx="18" className={`flow-node flow-node-${n.node.role}`} />
-              )}
-              {circle ? (
-                <>
-                  <text textAnchor="middle" dy={n.node.role === 'own' ? 4 : n.node.tail ? -2 : 4} className="flow-node-title">
-                    {n.node.role === 'own' ? n.node.tail || n.node.title.slice(0, 4) : n.node.title.slice(0, 4)}
-                  </text>
-                  {n.node.role !== 'own' && n.node.tail ? (
-                    <text textAnchor="middle" dy="12" className="flow-node-tail">{n.node.tail}</text>
-                  ) : null}
-                  {n.node.role === 'own' ? (
-                    <text x="34" dy="4" className="flow-side-label">{n.node.title.slice(0, 18)}</text>
-                  ) : null}
-                </>
-              ) : (
-                <text textAnchor="middle" dy="4" className="flow-node-title">{n.node.title.slice(0, 8)}</text>
-              )}
-              <title>{`${nodeName(n.node)}${n.node.sub ? ` · ${n.node.sub}` : ''}`}</title>
-            </g>
-          );
-        })}
-      </svg>
+      </div>
     </div>
   );
 }
 
-function buildLayout(result: FlowResult) {
-  const weight = (id: string) =>
-    result.links.filter((l) => l.from === id || l.to === id).reduce((s, l) => s + l.outAmount + l.inAmount, 0);
-  const left = result.nodes.filter((n) => n.role === 'dedicated').sort((a, b) => weight(b.id) - weight(a.id));
-  const right = result.nodes.filter((n) => n.role !== 'dedicated').sort((a, b) => {
-    const rank = (n: FlowNode) => (n.role === 'own' ? 0 : n.role === 'external' ? 1 : n.role === 'bucket' ? 2 : 3);
-    return rank(a) - rank(b) || weight(b.id) - weight(a.id);
+function Sparkline({
+  days,
+  values,
+  index,
+  onPick,
+}: {
+  days: string[];
+  values: (number | null)[];
+  index: number;
+  onPick: (i: number) => void;
+}) {
+  const w = 640;
+  const h = 46;
+  const nums = values.filter((v): v is number => v != null);
+  if (nums.length === 0 || days.length === 0) return <div className="tl-spark" />;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const pad = (max - min) * 0.12 || Math.abs(max) * 0.04 || 1;
+  const lo = min - pad;
+  const hi = max + pad;
+  const x = (i: number) => (days.length <= 1 ? w / 2 : (i / (days.length - 1)) * w);
+  const y = (v: number) => 4 + (1 - (v - lo) / (hi - lo)) * (h - 8);
+  let d = '';
+  values.forEach((v, i) => {
+    if (v == null) return;
+    d += `${d ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)} `;
   });
-  const row = 76;
-  const top = 40;
-  const leftX = 168;
-  const rightX = 620;
-  const h = Math.max(left.length, right.length, 1) * row + top;
-  const w = 980;
-  const pos = new Map<string, { x: number; y: number; side: 'L' | 'R' }>();
-  left.forEach((n, i) => pos.set(n.id, { x: leftX, y: top + i * row, side: 'L' }));
-  right.forEach((n, i) => pos.set(n.id, { x: rightX, y: top + i * row, side: 'R' }));
-
-  const links = result.links.flatMap((link) => {
-    const a = pos.get(link.from);
-    const b = pos.get(link.to);
-    if (!a || !b) return [];
-    const internal = a.side === 'L' && b.side === 'L';
-    let d: string;
-    let lx: number;
-    let ly: number;
-    if (internal) {
-      const x1 = a.x - 28;
-      const x2 = b.x - 28;
-      const c = leftX - 120;
-      d = `M ${x1} ${a.y} C ${c} ${a.y}, ${c} ${b.y}, ${x2} ${b.y}`;
-      lx = c + 16;
-      ly = (a.y + b.y) / 2 - 6;
-    } else {
-      const x1 = a.x + (a.side === 'L' ? 28 : -56);
-      const x2 = b.x + (b.side === 'L' ? 28 : -56);
-      d = `M ${x1} ${a.y} C ${(x1 + x2) / 2} ${a.y}, ${(x1 + x2) / 2} ${b.y}, ${x2} ${b.y}`;
-      lx = (x1 + x2) / 2;
-      ly = (a.y + b.y) / 2 - 6;
-    }
-    return [{ link, d, lx, ly }];
-  });
-  return {
-    w,
-    h,
-    links,
-    nodes: [...left, ...right].map((node) => ({ node, ...pos.get(node.id)! })),
-  };
+  const px = x(Math.max(0, Math.min(index, days.length - 1)));
+  return (
+    <svg
+      className="tl-spark"
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ratio = (e.clientX - rect.left) / rect.width;
+        onPick(Math.round(ratio * (days.length - 1)));
+      }}
+    >
+      <path d={d} fill="none" stroke="#3d5ccc" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+      <line x1={px} x2={px} y1={0} y2={h} stroke="#c2410c" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
 }
 
-function FlowTables({ result, focus }: { result: FlowResult; focus: string | null }) {
+function FlowTables({ result }: { result: FlowResult }) {
   const byId = new Map(result.nodes.map((n) => [n.id, n]));
   const dedicated = result.links.filter((l) => l.kind === 'dedicated');
   const own = result.links.filter((l) => l.kind === 'own');
-  const dim = (l: FlowLink) => focus != null && !touches(l, focus);
   return (
     <>
       {dedicated.length > 0 ? (
@@ -330,7 +345,7 @@ function FlowTables({ result, focus }: { result: FlowResult; focus: string | nul
             </thead>
             <tbody>
               {dedicated.map((l) => (
-                <tr key={l.id} className={dim(l) ? 'dim' : ''}>
+                <tr key={l.id}>
                   <td>{nodeName(byId.get(l.from))}</td>
                   <td>{nodeName(byId.get(l.to))}</td>
                   <td>{l.outAmount ? `${formatMoney(l.outAmount)} · ${l.outCount} 笔` : '—'}</td>
@@ -374,7 +389,7 @@ function FlowTables({ result, focus }: { result: FlowResult; focus: string | nul
                 const outN = l.from.startsWith('acct:') ? l.outCount : l.inCount;
                 const inN = l.from.startsWith('acct:') ? l.inCount : l.outCount;
                 return (
-                  <tr key={l.id} className={dim(l) ? 'dim' : ''}>
+                  <tr key={l.id}>
                     <td>{nodeName(acct)}</td>
                     <td>
                       {other?.title}
@@ -427,7 +442,7 @@ function PartyTable({ lines, showGroup }: { lines: FlowPartyLine[]; showGroup?: 
           <th>笔数</th>
           <th>转出</th>
           <th>转入</th>
-          {showGroup ? <th>图上</th> : null}
+          {showGroup ? <th>归类</th> : null}
         </tr>
       </thead>
       <tbody>
@@ -441,7 +456,7 @@ function PartyTable({ lines, showGroup }: { lines: FlowPartyLine[]; showGroup?: 
             <td>{l.count}</td>
             <td>{l.outAmount ? formatMoney(l.outAmount) : '—'}</td>
             <td>{l.inAmount ? formatMoney(l.inAmount) : '—'}</td>
-            {showGroup ? <td>{l.grouped ? '对外转出' : '单独'}</td> : null}
+            {showGroup ? <td>{l.grouped ? '归入对外转出' : '单独列出'}</td> : null}
           </tr>
         ))}
       </tbody>

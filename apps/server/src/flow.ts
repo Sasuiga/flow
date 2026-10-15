@@ -5,8 +5,10 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  FlowBalance,
   FlowKind,
   FlowLink,
+  FlowMove,
   FlowNode,
   FlowPartyLine,
   FlowResponse,
@@ -155,7 +157,7 @@ function loadContext(taskId: number): {
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account,
-              f.bank, f.account_no
+              t.balance, t.page, t.line_no, f.bank, f.account_no
        FROM transactions t
        JOIN files f ON f.id = t.file_id
        WHERE f.task_id = ?`,
@@ -166,7 +168,7 @@ function loadContext(taskId: number): {
 
 function signatureOf(accounts: Acct[], rows: Record<string, unknown>[]): string {
   const body = [
-    'flow-v2',
+    'flow-v3',
     accounts
       .map((a) => a.key)
       .sort()
@@ -570,6 +572,69 @@ function assemble(taskId: number, taskName: string, clientName: string, accounts
   };
 }
 
+function peerText(g: Group, byKey: Map<string, Acct>): string {
+  if (g.kind === 'dedicated' && g.peerKey) {
+    const a = byKey.get(g.peerKey);
+    return a ? `${bankShort(a.bank)} ${tail(a.accountNo)}` : tail(g.peerKey);
+  }
+  if (g.kind === 'treasury') return treasuryLabel(g.summary || g.cpName);
+  if (g.kind === 'own') {
+    const name = shortHolder(g.peerName || g.cpName || '其他账户');
+    const no = g.peerAccount || g.cpAccount;
+    return no ? `${name} ${tail(no)}` : name;
+  }
+  const name = (g.peerName || g.cpName || '对外').trim();
+  return name.length > 22 ? `${name.slice(0, 22)}…` : name;
+}
+
+function buildMoves(groups: Group[], accounts: Acct[]): FlowMove[] {
+  const byKey = new Map(accounts.map((a) => [a.key, a]));
+  return groups
+    .filter((g) => g.date && g.count > 0 && g.kind !== '?')
+    .map((g) => ({
+      date: g.date,
+      accountId: acctNodeId(g.stmtKey),
+      direction: g.direction,
+      amount: g.count * g.amount,
+      count: g.count,
+      kind: g.kind as FlowMove['kind'],
+      peer: peerText(g, byKey),
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+function buildBalances(rows: Record<string, unknown>[], accounts: Acct[]): FlowBalance[] {
+  const keys = new Set(accounts.map((a) => a.key));
+  const bag = new Map<string, { date: string; balance: number; page: number; line: number; id: number }[]>();
+  for (const r of rows) {
+    const key = normAccountNo(String(r.account_no ?? ''));
+    if (!keys.has(key) || r.balance == null || r.balance === '') continue;
+    const date = String(r.date ?? '').slice(0, 10);
+    if (!date) continue;
+    const list = bag.get(key) ?? [];
+    list.push({
+      date,
+      balance: Number(r.balance),
+      page: Number(r.page) || 0,
+      line: Number(r.line_no) || 0,
+      id: Number(r.id) || 0,
+    });
+    bag.set(key, list);
+  }
+  const out: FlowBalance[] = [];
+  for (const [key, list] of bag) {
+    list.sort((a, b) => a.date.localeCompare(b.date) || a.page - b.page || a.line - b.line || a.id - b.id);
+    const points: { date: string; balance: number }[] = [];
+    for (const item of list) {
+      const last = points[points.length - 1];
+      if (last && last.date === item.date) last.balance = item.balance;
+      else points.push({ date: item.date, balance: item.balance });
+    }
+    out.push({ accountId: acctNodeId(key), points });
+  }
+  return out;
+}
+
 async function compute(taskId: number): Promise<FlowResponse> {
   const ctx = loadContext(taskId);
   if (!ctx) return { status: 'empty', message: '任务不存在' };
@@ -598,6 +663,8 @@ async function compute(taskId: number): Promise<FlowResponse> {
   fallbackOpen(groups, ctx.clientName, ctx.accounts);
   pairDedicated(groups, ctx.accounts);
   const result = assemble(taskId, ctx.taskName, ctx.clientName, ctx.accounts, groups, skipped, source);
+  result.moves = buildMoves(groups, ctx.accounts);
+  result.balances = buildBalances(ctx.rows, ctx.accounts);
   if (fallback) result.fallback = true;
   return { status: 'ready', result };
 }
