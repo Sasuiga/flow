@@ -10,6 +10,7 @@ type Draft = {
   balance: string;
   summary: string;
   counterparty: string;
+  category: string;
 };
 
 function draftOf(r: TxRow): Draft {
@@ -20,6 +21,7 @@ function draftOf(r: TxRow): Draft {
     balance: r.balance == null ? '' : String(r.balance),
     summary: r.summary ?? '',
     counterparty: r.counterparty ?? '',
+    category: r.category ?? '',
   };
 }
 
@@ -29,11 +31,14 @@ function draftOf(r: TxRow): Draft {
  */
 export default function ReviewQueue({ taskId }: { taskId?: number }) {
   const [rows, setRows] = useState<TxRow[]>([]);
+  const [catSet, setCatSet] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 分类下拉被动过才随保存写库，不碰就不动（避免把 LLM 分类清掉） */
+  const [catTouched, setCatTouched] = useState(false);
 
   async function load() {
     const r = await api.reviewQueue(taskId);
@@ -46,9 +51,17 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
+  useEffect(() => {
+    void api
+      .getCategories()
+      .then((r) => setCatSet(r.categories))
+      .catch(() => undefined);
+  }, []);
+
   function open(r: TxRow) {
     setEditing(r.id);
     setDraft(draftOf(r));
+    setCatTouched(false);
     setNotice(undefined);
     setError(undefined);
   }
@@ -75,6 +88,7 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
         direction: draft.direction,
         balance,
         counterparty: draft.counterparty,
+        ...(catTouched ? { category: draft.category === '' ? null : draft.category } : {}),
       });
       setNotice(
         r.row.status === 'needs_review'
@@ -122,6 +136,40 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
                 </span>
               </header>
               {r.reviewNote ? <div className="tx-detail-review">复核：{r.reviewNote}</div> : null}
+              <div className="review-cat-line">
+                <span className="review-cat-label">分类</span>
+                <select
+                  className="input review-cat-select"
+                  value={r.category ?? ''}
+                  onChange={(e) =>
+                    void api
+                      .patchTransaction(r.id, {
+                        date: r.date ?? '',
+                        summary: r.summary ?? '',
+                        amount: r.amount,
+                        direction: r.direction,
+                        balance: r.balance ?? null,
+                        counterparty: r.counterparty ?? '',
+                        category: e.target.value === '' ? null : e.target.value,
+                      })
+                      .then((res) => {
+                        setRows((rs) => rs.map((x) => (x.id === res.row.id ? res.row : x)));
+                      })
+                      .catch((err) => setError((err as Error).message))
+                  }
+                >
+                  <option value="">未分类</option>
+                  {catSet.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                  {r.category && !catSet.includes(r.category) ? <option value={r.category}>{r.category}</option> : null}
+                </select>
+                {r.category ? (
+                  <span className="review-cat-src">{r.categorySrc === 'manual' ? '人工改判' : 'LLM 分类'}</span>
+                ) : null}
+              </div>
               {r.rawText ? <pre className="tx-raw">{r.rawText}</pre> : null}
               {editing === r.id && draft ? (
                 <div className="review-form">
@@ -143,6 +191,22 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
                     onChange={(e) => setDraft({ ...draft, counterparty: e.target.value })}
                     placeholder="对手方"
                   />
+                  <select
+                    className="input"
+                    value={draft.category}
+                    title="M4 改判：保存后作为人工示例，后续同类摘要自动按这个口径"
+                    onChange={(e) => {
+                      setCatTouched(true);
+                      setDraft({ ...draft, category: e.target.value });
+                    }}
+                  >
+                    <option value="">未分类</option>
+                    {catSet.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
                   <button className="primary-button" disabled={busy} onClick={() => void save(r.id)}>
                     保存并复算
                   </button>

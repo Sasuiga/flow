@@ -4,6 +4,7 @@ import {
   AutoComplete,
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -19,11 +20,14 @@ import {
   EyeInvisibleOutlined,
   EyeOutlined,
   KeyOutlined,
+  PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
   ScanOutlined,
+  TagsOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
-import { Settings as FlowSettings } from '@flow/shared';
+import { CATEGORY_DEFS, Settings as FlowSettings } from '@flow/shared';
 import { api, LlmModelsResult } from '../api';
 
 /** 内联状态条：测试结果直接显示在按钮下方，绿色=成功 / 红色=失败 */
@@ -97,6 +101,11 @@ export default function SettingsPage() {
   const [modelOptions, setModelOptions] = useState<{ value: string }[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
 
+  /* M4 分类集管理 */
+  const [cats, setCats] = useState<string[]>([]);
+  const [newCat, setNewCat] = useState('');
+  const [autoCat, setAutoCat] = useState(true);
+
   useEffect(() => {
     api
       .getSettings()
@@ -108,12 +117,17 @@ export default function SettingsPage() {
           llmConcurrency: s.llmConcurrency,
         });
         ocrForm.setFieldsValue({ ocrBase: s.ocrBase, ocrExtraHeader: s.ocrExtraHeader });
+        setAutoCat(s.autoCategorize);
         setLoading(false);
       })
       .catch((e) => {
         message.error((e as Error).message);
         setLoading(false);
       });
+    api
+      .getCategories()
+      .then((r) => setCats(r.categories))
+      .catch(() => undefined);
   }, [llmForm, ocrForm]);
 
   /** 拉取端点上的可用模型，填进模型名下拉 */
@@ -197,7 +211,8 @@ export default function SettingsPage() {
     }
     setSaving(true);
     try {
-      await api.putSettings({ ...llm, ...ocr } as unknown as FlowSettings);
+      await api.putSettings({ ...llm, ...ocr, autoCategorize: autoCat } as unknown as FlowSettings);
+      await api.putCategories(cats);
       message.success('设置已保存，立即生效');
     } catch (e) {
       message.error((e as Error).message);
@@ -311,6 +326,74 @@ export default function SettingsPage() {
                     </Space>
                   </Form>
                   <StatusLine status={ocrStatus} />
+                </div>
+              ),
+            },
+            {
+              key: 'categories',
+              label: (
+                <span>
+                  <TagsOutlined /> 分类集
+                </span>
+              ),
+              children: (
+                <div style={{ maxWidth: 640 }}>
+                  <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                    LLM 批量逐笔分类只能从这里选；人工改判会作为示例喂给下一批。默认是募集资金专户分类集，可按需改。
+                  </Typography.Paragraph>
+                  <Checkbox checked={autoCat} onChange={(e) => setAutoCat(e.target.checked)} style={{ marginBottom: 12 }}>
+                    解析完成后自动 LLM 分类
+                  </Checkbox>
+                  <Space wrap>
+                    {cats.map((c) => (
+                      <Space key={c} size={4}>
+                        <Input
+                          size="small"
+                          style={{ width: 130 }}
+                          value={c}
+                          placeholder="分类名"
+                          title={CATEGORY_DEFS[c] ? `默认定义：${CATEGORY_DEFS[c]}` : '自定义分类，按名称含义归类'}
+                          onChange={(e) =>
+                            setCats((cs) =>
+                              cs.map((x) => (x === c ? e.target.value.trim() : x)).filter((x, i, a) => x && a.indexOf(x) === i),
+                            )
+                          }
+                        />
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => setCats((cs) => cs.filter((x) => x !== c))}
+                        />
+                      </Space>
+                    ))}
+                  </Space>
+                  <Space style={{ marginTop: 8 }}>
+                    <Input
+                      size="small"
+                      style={{ width: 150 }}
+                      placeholder="新增分类"
+                      value={newCat}
+                      onChange={(e) => setNewCat(e.target.value)}
+                      onPressEnter={() => {
+                        const v = newCat.trim();
+                        if (v && !cats.includes(v)) setCats((cs) => [...cs, v]);
+                        setNewCat('');
+                      }}
+                    />
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() => {
+                        const v = newCat.trim();
+                        if (v && !cats.includes(v)) setCats((cs) => [...cs, v]);
+                        setNewCat('');
+                      }}
+                    >
+                      添加
+                    </Button>
+                  </Space>
                 </div>
               ),
             },

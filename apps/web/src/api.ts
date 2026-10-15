@@ -3,6 +3,7 @@ import {
   Client,
   ClientBrief,
   ClientView,
+  ClassifyOutcome,
   CreateEntityInput,
   FlowTask,
   FsListing,
@@ -122,6 +123,9 @@ export const api = {
   getFlow: (id: number) => j<FlowResponse>(`/api/tasks/${id}/flow`),
   runFlow: (id: number, force = false) =>
     j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force }) }),
+  /** M4：任务级 LLM 批量分类（force=连 LLM 已分的也重分，人工改判不动） */
+  categorizeTask: (id: number, force = false) =>
+    j<ClassifyOutcome>(`/api/tasks/${id}/categorize`, { method: 'POST', body: JSON.stringify({ force }) }),
   deleteTask: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   refreshTask: (id: number) => j<RefreshResult>(`/api/tasks/${id}/refresh`, { method: 'POST' }),
   openTaskFolder: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}/open`, { method: 'POST' }),
@@ -151,7 +155,26 @@ export const api = {
     j<{ rows: TxRow[]; total: number }>(`/api/transactions/review${taskId ? `?taskId=${taskId}` : ''}`),
   patchTransaction: (
     id: number,
-    body: { date?: string; summary?: string; amount: number; direction: 'in' | 'out'; balance?: number | null; counterparty?: string },
+    body: {
+      date?: string;
+      summary?: string;
+      amount: number;
+      direction: 'in' | 'out';
+      balance?: number | null;
+      counterparty?: string;
+      /** M4 改判：显式传 null=清除 */
+      category?: string | null;
+    },
   ) =>
     j<{ row: TxRow; reviewCount: number }>(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** M4：分析页按线路批量改判（写交易级 category） */
+  bulkCategory: (ids: number[], category: string | null) =>
+    j<{ updated: number }>(`/api/transactions/bulk-category`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, category }),
+    }),
+  /* ---------- 分类集（M4，§3.3 设置页管理） ---------- */
+  getCategories: () => j<{ categories: string[]; defs: Record<string, string> }>('/api/categories'),
+  putCategories: (categories: string[]) =>
+    j<{ categories: string[] }>(`/api/categories`, { method: 'PUT', body: JSON.stringify({ categories }) }),
 };

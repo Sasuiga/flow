@@ -1,4 +1,4 @@
-import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, Trash2, X } from 'lucide-react';
+import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BankFile, FileStatus, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
 import { api, TaskDetail } from '../api';
@@ -118,6 +118,28 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     }
   }
 
+  /** M4：任务级 LLM 批量分类（30 笔/批，带上最近人工改判示例；人工改判过的不动） */
+  async function doCategorize() {
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      const r = await api.categorizeTask(taskId);
+      if (r.total === 0) {
+        setNotice('没有待分类的交易（LLM 已分的不会重分，人工改判的永远不动）');
+      } else {
+        setNotice(
+          `LLM 分类完成：${r.classified}/${r.total} 笔已分类` +
+            (r.lowConfidence > 0 ? `，其中 ${r.lowConfidence} 笔置信度低，进修正队列待确认` : ''),
+        );
+      }
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function doRemove(f: BankFile) {
     const ok = await confirmDialog(
       `删除「${f.relPath}」的登记？${f.txCount > 0 ? `其下 ${f.txCount} 笔交易一并删除` : '（尚未解析，无交易）'}磁盘 PDF 不动，重新扫描可恢复。`,
@@ -179,6 +201,10 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
           <div className="page-header-actions" style={{ marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button className="secondary-button" disabled={task.dirMissing || busy} onClick={() => void doParseAll()}>
               <Play size={13} /> 全部解析
+            </button>
+            <button className="secondary-button" disabled={busy} onClick={() => void doCategorize()}>
+              {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+              LLM 分类
             </button>
             <button className="secondary-button" disabled={task.dirMissing || busy} onClick={() => void doRefresh()}>
               <RefreshCw size={13} /> 重新扫描

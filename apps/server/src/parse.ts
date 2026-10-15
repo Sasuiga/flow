@@ -13,6 +13,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { getSettings } from './settings.js';
 import { extractJson, llmChat } from './ai.js';
+import { classifyTask } from './categorize.js';
 import { scanPdfFiles } from './fsutil.js';
 
 const require = createRequire(import.meta.url);
@@ -529,6 +530,7 @@ const PARSE_STEPS = [
   ['structure', '结构化输出'],
   ['balance', '余额复核'],
   ['save', '写入交易'],
+  ['categorize', 'LLM 分类'],
 ] as const;
 
 type ParseStepId = (typeof PARSE_STEPS)[number][0];
@@ -664,6 +666,23 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
   patch.progress = null;
   prog.set('save', 'done', reviewCount > 0 ? `${all.length} 笔，其中 ${reviewCount} 笔待复核` : `${all.length} 笔`);
   setFile(fileId, patch);
+
+  // 6) M4：解析完自动 LLM 批量分类（只分本文件未分类的交易；人工改判过的不动）
+  if (all.length > 0 && getSettings().autoCategorize) {
+    try {
+      prog.set('categorize', 'run', `${all.length} 笔待分类`);
+      const r = await classifyTask(Number(file.task_id), { fileId });
+      prog.set('categorize', 'done', r.classified > 0 ? `已分类 ${r.classified} 笔` : '无需分类');
+      setFile(fileId, { error: null });
+    } catch (e) {
+      // 解析本身已成功，分类失败只留提示，任务页可点「LLM 分类」重试
+      prog.set('categorize', 'fail', (e as Error).message);
+      setFile(fileId, { error: `LLM 分类失败：${(e as Error).message}` });
+    }
+  } else {
+    prog.set('categorize', 'skip', all.length > 0 ? '自动分类已关闭' : '无交易');
+  }
+  setFile(fileId, { progress: null });
   return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount: all.length, reviewCount };
 }
 

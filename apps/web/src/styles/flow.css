@@ -1864,3 +1864,65 @@ select.input {
   color: var(--ui-faint);
   font-size: 12px;
 }
+
+/* ---------- M4 分类（交易页改判 / 修正队列 / 分析页批量打标） ---------- */
+
+.tx-cat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tx-cat-select {
+  flex: 1;
+  min-width: 96px;
+  min-height: 26px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.tx-cat-src {
+  flex: none;
+  color: var(--ui-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tx-cat-src.manual {
+  color: var(--ui-accent, #c2410c);
+}
+
+.review-cat-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.review-cat-label {
+  flex: none;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.review-cat-select {
+  width: 160px;
+}
+
+.review-cat-src {
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.flow-cat-select {
+  width: auto;
+  min-width: 132px;
+  min-height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.flow-cat-muted {
+  color: var(--ui-faint);
+}

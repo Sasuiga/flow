@@ -9,6 +9,7 @@
 import { Router } from 'express';
 import { db } from './db.js';
 import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
+import { bulkCategory, setTxCategory } from './categorize.js';
 import { TaskListItem, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
 function toTxRow(r: Record<string, unknown>): TxRow {
@@ -81,7 +82,15 @@ transactionsRouter.get('/review', (req, res) => {
   res.json({ rows: rows.map(toTxRow), total: rows.length });
 });
 
-/** 人工修正一行，然后只重算该文件的复核提示 */
+/** 分析页按线路批量改判（M4）：整条线路的交易一起打标，写的是交易级 category */
+transactionsRouter.post('/bulk-category', (req, res) => {
+  const b = (req.body ?? {}) as { ids?: unknown; category?: unknown };
+  if (!Array.isArray(b.ids)) return res.status(400).json({ error: 'ids 需为数组' });
+  const category = b.category == null || b.category === '' ? null : String(b.category).trim();
+  res.json({ updated: bulkCategory(b.ids as number[], category) });
+});
+
+/** 人工修正一行（解析字段 + M4 的改判），然后只重算该文件的复核提示 */
 transactionsRouter.patch('/:id', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT id, file_id FROM transactions WHERE id = ?').get(id) as
@@ -95,24 +104,36 @@ transactionsRouter.patch('/:id', (req, res) => {
     direction?: string;
     balance?: number | null;
     counterparty?: string | null;
+    /** M4 改判：string=改判成该分类，null=清除（只在请求体显式携带 category 时生效） */
+    category?: string | null;
   };
-  if (b.direction !== 'in' && b.direction !== 'out') return res.status(400).json({ error: '方向只能是收入或支出' });
-  const amount = Number(b.amount);
-  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金额需为大于 0 的数字' });
-  const balance =
-    b.balance == null || (typeof b.balance === 'string' && (b.balance as string) === '') ? null : Number(b.balance);
-  if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
-  db.prepare(
-    `UPDATE transactions SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ? WHERE id = ?`,
-  ).run(
-    typeof b.date === 'string' && b.date.trim() ? b.date.trim() : null,
-    typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null,
-    Math.round(amount * 100) / 100,
-    b.direction,
-    balance == null ? null : Math.round(balance * 100) / 100,
-    typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null,
-    id,
-  );
+  const hasNumbers = b.amount != null || b.balance != null || b.date != null || b.counterparty != null;
+  if (hasNumbers) {
+    if (b.direction !== 'in' && b.direction !== 'out') return res.status(400).json({ error: '方向只能是收入或支出' });
+    const amount = Number(b.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金额需为大于 0 的数字' });
+    const balance =
+      b.balance == null || (typeof b.balance === 'string' && (b.balance as string) === '')
+        ? null
+        : Number(b.balance);
+    if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
+    db.prepare(
+      `UPDATE transactions SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ? WHERE id = ?`,
+    ).run(
+      typeof b.date === 'string' && b.date.trim() ? b.date.trim() : null,
+      typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null,
+      Math.round(amount * 100) / 100,
+      b.direction,
+      balance == null ? null : Math.round(balance * 100) / 100,
+      typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null,
+      id,
+    );
+  }
+  if ('category' in b && b.category !== undefined) {
+    if (!setTxCategory(id, b.category == null ? null : String(b.category).trim() || null)) {
+      return res.status(404).json({ error: '交易不存在' });
+    }
+  }
   const reviewCount = recomputeFileBalanceReviews(existing.file_id, id);
   const updated = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id) as Record<string, unknown>;
   res.json({ row: toTxRow(updated), reviewCount });

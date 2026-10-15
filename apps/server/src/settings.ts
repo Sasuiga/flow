@@ -6,6 +6,7 @@ export function getSettings(): Settings {
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   for (const r of rows) {
     if (r.key === 'llmConcurrency') s.llmConcurrency = Number(r.value) || s.llmConcurrency;
+    else if (r.key === 'autoCategorize') s.autoCategorize = r.value === '1' || r.value === 'true';
     else if (r.key === 'llmExtraHeader' || r.key === 'ocrExtraHeader')
       (s as unknown as Record<string, unknown>)[r.key] = r.value;
     else (s as unknown as Record<string, unknown>)[r.key] = r.value;
@@ -24,6 +25,7 @@ export function saveSettings(s: Settings): Settings {
     up.run('ocrBase', s.ocrBase);
     up.run('ocrExtraHeader', s.ocrExtraHeader ?? '');
     up.run('llmConcurrency', String(s.llmConcurrency));
+    up.run('autoCategorize', s.autoCategorize ? '1' : '0');
   });
   tx();
   return s;

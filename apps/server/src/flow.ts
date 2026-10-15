@@ -5,6 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  CategoryCount,
   FlowBalance,
   FlowKind,
   FlowLine,
@@ -158,7 +159,7 @@ function loadContext(taskId: number): {
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account,
-              t.balance, t.page, t.line_no, f.bank, f.account_no
+              t.balance, t.page, t.line_no, t.category, f.bank, f.account_no
        FROM transactions t
        JOIN files f ON f.id = t.file_id
        WHERE f.task_id = ?`,
@@ -169,13 +170,16 @@ function loadContext(taskId: number): {
 
 function signatureOf(accounts: Acct[], rows: Record<string, unknown>[]): string {
   const body = [
-    'flow-v4',
+    'flow-v5',
     accounts
       .map((a) => a.key)
       .sort()
       .join(','),
     ...rows.map((r) =>
-      [r.id, r.date, r.amount, r.direction, r.counterparty, r.counterparty_account, r.account_no, r.summary].join('|'),
+      [
+        r.id, r.date, r.amount, r.direction, r.counterparty, r.counterparty_account,
+        r.account_no, r.summary, r.category,
+      ].join('|'),
     ),
   ].join('\n');
   return createHash('sha1').update(body).digest('hex');
@@ -403,7 +407,35 @@ function toLine(r: Record<string, unknown>): FlowLine {
     counterparty: String(r.counterparty ?? '').trim() || undefined,
     counterpartyAccount: String(r.counterparty_account ?? '').trim() || undefined,
     balance: r.balance == null || r.balance === '' ? undefined : Number(r.balance),
+    category: String(r.category ?? '').trim() || undefined,
   };
+}
+
+/** 一批交易的分类分布（M4：分析页按线路批量打标用，null=未分类） */
+function groupCatCounts(g: Group, rowById: Map<number, Record<string, unknown>>): CategoryCount[] {
+  const m = new Map<string, number>();
+  for (const id of g.ids) {
+    const c = String(rowById.get(id)?.category ?? '').trim();
+    m.set(c, (m.get(c) ?? 0) + 1);
+  }
+  return [...m.entries()]
+    .map(([k, count]) => ({ category: k === '' ? null : k, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function mergeCatCounts(target: CategoryCount[] | undefined, src: CategoryCount[]): CategoryCount[] {
+  const m = new Map<string, number>();
+  for (const c of target ?? []) m.set(c.category ?? '', c.count);
+  for (const c of src) m.set(c.category ?? '', (m.get(c.category ?? '') ?? 0) + c.count);
+  return [...m.entries()]
+    .map(([k, count]) => ({ category: k === '' ? null : k, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function pushTxIds(target: number[] | undefined, ids: number[]): number[] {
+  const out = [...(target ?? [])];
+  if (out.length < 2000) out.push(...ids);
+  return out;
 }
 
 function assemble(
@@ -434,7 +466,7 @@ function assemble(
     return id;
   };
 
-  const addFlow = (payer: string, payee: string, kind: FlowKind, amount: number, count: number, both: number, lines?: FlowLine[]) => {
+  const addFlow = (payer: string, payee: string, kind: FlowKind, amount: number, count: number, both: number, lines?: FlowLine[], ids?: number[], cats?: CategoryCount[]) => {
     if (count <= 0 || amount <= 0) return;
     let link = links.find((l) => (l.from === payer && l.to === payee) || (l.from === payee && l.to === payer));
     if (!link) {
@@ -453,6 +485,11 @@ function assemble(
       links.push(link);
     }
     if (lines?.length) link.lines = [...(link.lines ?? []), ...lines];
+    if (ids?.length) {
+      if (!link.txIds) link.txIds = [];
+      if (link.txIds.length < 2000) link.txIds.push(...ids);
+    }
+    if (cats) link.categories = mergeCatCounts(link.categories, cats);
     if (link.from === payer && link.to === payee) {
       link.outAmount += amount;
       link.outCount += count;
@@ -478,7 +515,7 @@ function assemble(
       const peerId = ensureAcct(g.peerKey);
       const payer = g.direction === 'out' ? stmtId : peerId;
       const payee = g.direction === 'out' ? peerId : stmtId;
-      addFlow(payer, payee, 'dedicated', amt, g.liveCount, bothAmt);
+      addFlow(payer, payee, 'dedicated', amt, g.liveCount, bothAmt, undefined, g.ids, groupCatCounts(g, rowById));
       continue;
     }
     if (g.kind === 'own') {
@@ -494,7 +531,7 @@ function assemble(
         const row = rowById.get(id);
         return row ? [toLine(row)] : [];
       });
-      addFlow(payer, payee, 'own', amt, g.liveCount, 0, lines);
+      addFlow(payer, payee, 'own', amt, g.liveCount, 0, lines, g.ids, groupCatCounts(g, rowById));
       continue;
     }
     if (g.kind === 'treasury') {
@@ -504,6 +541,8 @@ function assemble(
         hit.count += g.liveCount;
         if (g.direction === 'out') hit.outAmount += amt;
         else hit.inAmount += amt;
+        hit.txIds = pushTxIds(hit.txIds, g.ids);
+        hit.categories = mergeCatCounts(hit.categories, groupCatCounts(g, rowById));
       } else {
         treasury.push({
           name: label,
@@ -511,6 +550,8 @@ function assemble(
           count: g.liveCount,
           outAmount: g.direction === 'out' ? amt : 0,
           inAmount: g.direction === 'in' ? amt : 0,
+          txIds: g.ids.slice(0, 2000),
+          categories: groupCatCounts(g, rowById),
         });
       }
       continue;
@@ -522,6 +563,8 @@ function assemble(
       hit.count += g.liveCount;
       if (g.direction === 'out') hit.outAmount += amt;
       else hit.inAmount += amt;
+      hit.txIds = pushTxIds(hit.txIds, g.ids);
+      hit.categories = mergeCatCounts(hit.categories, groupCatCounts(g, rowById));
     } else {
       externalAgg.set(key, {
         name,
@@ -529,6 +572,8 @@ function assemble(
         count: g.liveCount,
         outAmount: g.direction === 'out' ? amt : 0,
         inAmount: g.direction === 'in' ? amt : 0,
+        txIds: g.ids.slice(0, 2000),
+        categories: groupCatCounts(g, rowById),
       });
     }
   }
@@ -559,7 +604,7 @@ function assemble(
     const amt = g.liveCount * g.amount;
     const payer = g.direction === 'out' ? stmtId : target;
     const payee = g.direction === 'out' ? target : stmtId;
-    addFlow(payer, payee, 'external', amt, g.liveCount, 0);
+    addFlow(payer, payee, 'external', amt, g.liveCount, 0, undefined, g.ids, groupCatCounts(g, rowById));
   }
 
   if (treasury.length > 0) {
@@ -571,7 +616,7 @@ function assemble(
       const amt = g.liveCount * g.amount;
       const payer = g.direction === 'out' ? stmtId : id;
       const payee = g.direction === 'out' ? id : stmtId;
-      addFlow(payer, payee, 'treasury', amt, g.liveCount, 0);
+      addFlow(payer, payee, 'treasury', amt, g.liveCount, 0, undefined, g.ids, groupCatCounts(g, rowById));
     }
   }
 

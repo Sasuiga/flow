@@ -4,7 +4,6 @@ import { Table } from 'antd';
 import { TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { formatMoney } from '../lib/format';
-
 type TxPageProps = {
   /** 导航上下文带入的过滤（点某个流水文件时带上它的银行和账户） */
   initialTaskId?: number;
@@ -28,6 +27,7 @@ function fmtAmount(n?: number): string {
  */
 export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo }: TxPageProps) {
   const [options, setOptions] = useState<TxOptions | null>(null);
+  const [catSet, setCatSet] = useState<string[]>([]);
   const [query, setQuery] = useState<TxQuery>({
     taskId: initialTaskId,
     bank: initialBank,
@@ -111,6 +111,13 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
     query.fundUse,
   ]);
 
+  useEffect(() => {
+    void api
+      .getCategories()
+      .then((r) => setCatSet(r.categories))
+      .catch(() => undefined);
+  }, []);
+
   // 从某个流水文件进来时，带上它的银行和账户；之后用户改筛选不再被盖回去。
   useEffect(() => {
     setQuery((q) => ({
@@ -143,6 +150,29 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
   }, [query]);
 
   const patch = (p: Partial<TxQuery>) => setQuery((q) => ({ ...q, ...p, page: 1 }));
+
+  /** M4 改判：写交易级 category（src=manual），下一批 LLM 分类会自动带上这个口径 */
+  async function recategorize(r: TxRow, category: string | null) {
+    try {
+      const res = await api.patchTransaction(r.id, {
+        date: r.date ?? '',
+        summary: r.summary ?? '',
+        amount: r.amount,
+        direction: r.direction,
+        balance: r.balance ?? null,
+        counterparty: r.counterparty ?? '',
+        category,
+      });
+      setData((d) =>
+        d
+          ? { ...d, rows: d.rows.map((x) => (x.id === res.row.id ? res.row : x)) }
+          : d,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   const activeFilterCount = [
     query.taskId, query.fileId, query.bank, query.accountNo, query.fundUse, query.from, query.to,
     query.counterparty, query.status, query.category, query.q,
@@ -360,6 +390,39 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
               width: 170,
               ellipsis: true,
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
+            },
+            {
+              title: '分类',
+              width: 170,
+              render: (_: unknown, r: TxRow) => {
+                const extra = r.category && !catSet.includes(r.category) ? [r.category] : [];
+                return (
+                  <div className="tx-cat">
+                    <select
+                      className="input tx-cat-select"
+                      value={r.category ?? ''}
+                      onChange={(e) => void recategorize(r, e.target.value || null)}
+                    >
+                      <option value="">未分类</option>
+                      {catSet.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                      {extra.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                    {r.category ? (
+                      <span className={`tx-cat-src${r.categorySrc === 'manual' ? ' manual' : ''}`}>
+                        {r.categorySrc === 'manual' ? '人工改判' : 'LLM'}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              },
             },
             {
               title: '银行 / 账户',

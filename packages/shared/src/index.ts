@@ -132,6 +132,8 @@ export interface Settings {
   /** 可选：OCR 自定义请求头 */
   ocrExtraHeader: string;
   llmConcurrency: number;
+  /** 解析完成后自动 LLM 批量分类（M4） */
+  autoCategorize: boolean;
 }
 
 export interface ProbeResult {
@@ -348,6 +350,24 @@ export interface FlowLine {
   counterparty?: string;
   counterpartyAccount?: string;
   balance?: number;
+  /** 该笔交易的分类（M4） */
+  category?: string;
+}
+
+/** 分类分布统计：category 为 null 表示未分类 */
+export interface CategoryCount {
+  category: string | null;
+  count: number;
+}
+
+/** LLM 批量分类结果（M4） */
+export interface ClassifyOutcome {
+  /** 本次待分类的笔数 */
+  total: number;
+  classified: number;
+  /** 低置信、进修正队列待人工确认 */
+  lowConfidence: number;
+  message?: string;
 }
 
 export interface FlowLink {
@@ -366,6 +386,10 @@ export interface FlowLink {
   inBoth: number;
   /** 组成这一行的流水，供复查 */
   lines?: FlowLine[];
+  /** 组成这一行的交易 id（批量改判用，M4） */
+  txIds?: number[];
+  /** 这批交易的分类分布（null = 未分类），M4 */
+  categories?: CategoryCount[];
 }
 
 export interface FlowMove {
@@ -393,6 +417,10 @@ export interface FlowPartyLine {
   inAmount: number;
   /** 频率低，画进「对外转出」 */
   grouped?: boolean;
+  /** 这条线路下的交易 id（批量改判用，M4） */
+  txIds?: number[];
+  /** 这批交易的分类分布（null = 未分类），M4 */
+  categories?: CategoryCount[];
 }
 
 export interface FlowResult {
@@ -432,6 +460,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ocrBase: 'http://192.168.1.17:8008',
   ocrExtraHeader: '',
   llmConcurrency: 2,
+  autoCategorize: true,
 };
 
 /** 专户（募集资金）默认分类集 */
@@ -455,3 +484,18 @@ export const GENERAL_CATEGORIES = [
   '手续费',
   '其他',
 ];
+
+/** 默认分类的定义（喂给 LLM 的分类说明，§5.4） */
+export const CATEGORY_DEFS: Record<string, string> = {
+  项目投入: '募集资金投向募投项目：工程款、设备/材料采购、土地出让金、项目相关大额对外付款',
+  临时补流: '募集资金临时转出补充流动资金（通常约定期限内归还）',
+  现金管理: '闲置资金存放与运作：活期/定期存单、结构性存款、理财产品申购赎回、大额存单',
+  手续费: '银行手续费、汇款手续费、账户管理费',
+  利息: '存款利息收入或贷款利息支出',
+  现金管理投资收益: '理财/存单到期兑付的投资收益、大额存单利息收入',
+  其他: '不属于以上类别的交易',
+  '货款/服务': '经营性货款、服务费往来',
+  关联方往来: '与已登记关联方/子公司的资金往来',
+  税费: '税款缴纳与返还',
+  '工资/社保': '工资、社保、公积金发放',
+};
