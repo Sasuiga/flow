@@ -287,13 +287,19 @@ export interface FundUse {
   name: string;
 }
 
-/** 融资项目下已解析出的账号，以及手工归集的募投项目 */
+/** 账号比对键：去掉空白和横线，字母大写。手工清单和解析结果用同一把尺子。 */
+export function normAccountNo(raw: string | null | undefined): string {
+  return String(raw ?? '').replace(/[\s\u3000\-]/g, '').toUpperCase();
+}
+
+/** 融资项目上手工登记的募资专户。募投项目是挂上去的，不存在流水里。 */
 export interface ProjectAccount {
+  id: number;
+  holder: string;
   bank: string;
   accountNo: string;
-  accountName?: string;
-  txCount: number;
   fundUseId?: number;
+  fundUse?: string;
 }
 
 /** 顶栏「当前任务」上下文切换器（Avalon ChromeContextTab，M2 交付） */

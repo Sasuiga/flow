@@ -1,6 +1,6 @@
 import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BankFile, FileStatus, ParseStep } from '@flow/shared';
+import { BankFile, FileStatus, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
 import { api, TaskDetail } from '../api';
 import { ListRow, ListRowHeader } from '../components/ListRow';
 import { confirmDialog } from '../lib/confirm';
@@ -209,6 +209,10 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
         </div>
       ) : null}
 
+      {detail && (detail.accounts?.length ?? 0) > 0 ? (
+        <AccountCoverage accounts={detail.accounts} files={detail.files} />
+      ) : null}
+
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>流水文件</h1>
@@ -244,6 +248,11 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
             />
             {detail.files.map((f) => {
               const chip = STATUS_CHIP[f.status] ?? { cls: 'chip-muted', label: f.status };
+              const accounts = detail.accounts ?? [];
+              const foreign =
+                accounts.length > 0 &&
+                !!f.accountNo &&
+                !accounts.some((a) => normAccountNo(a.accountNo) === normAccountNo(f.accountNo));
               return (
                 <div key={f.id}>
                   <ListRow
@@ -260,7 +269,8 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                   >
                     <div className="file-row-cols">
                       <span className="list-row-col-title" title={f.relPath}>
-                        {f.relPath}
+                        <span className="file-name">{f.relPath}</span>
+                        {foreign ? <span className="chip chip-warning">不是募资专户</span> : null}
                       </span>
                       <span className="file-col-status">
                         <span className={`chip ${chip.cls}`}>
@@ -285,6 +295,45 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
         )
       ) : null}
     </div>
+  );
+}
+
+function AccountCoverage({ accounts, files }: { accounts: ProjectAccount[]; files: BankFile[] }) {
+  const ready = (a: ProjectAccount) =>
+    files.some((f) => f.accountNo && normAccountNo(f.accountNo) === normAccountNo(a.accountNo));
+  const missing = accounts.filter((a) => !ready(a)).length;
+  return (
+    <section className="page-section">
+      <div className="page-header" style={{ marginBottom: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 18, marginBottom: 2 }}>募资专户</h1>
+        </div>
+        <div className="page-header-actions">
+          {missing === 0 ? <span className="chip chip-success">已齐</span> : <span className="chip chip-warning">缺 {missing} 个</span>}
+        </div>
+      </div>
+      <ListRowHeader
+        cols={[
+          { label: '账户主体', cls: 'list-row-col-title' },
+          { label: '开户行', cls: 'list-row-col-meta' },
+          { label: '账号', cls: 'list-row-col-account' },
+          { label: '流水', cls: 'list-row-col-status' },
+        ]}
+      />
+      {accounts.map((a) => {
+        const ok = ready(a);
+        return (
+          <ListRow key={a.id} title={a.holder}>
+            <span className="list-row-col-title">{a.holder}</span>
+            <span className="list-row-col-meta">{a.bank}</span>
+            <span className="list-row-col-account">{a.accountNo}</span>
+            <span className="list-row-col-status">
+              <span className={`chip ${ok ? 'chip-success' : 'chip-warning'}`}>{ok ? '已提供' : '未提供'}</span>
+            </span>
+          </ListRow>
+        );
+      })}
+    </section>
   );
 }
 

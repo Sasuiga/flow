@@ -4,7 +4,7 @@ import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfF
 import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
 import { syncTaskWatchers } from './watch.js';
-import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
@@ -83,33 +83,40 @@ function listFundUses(projectId: number): FundUse[] {
   }));
 }
 
-function listProjectAccounts(projectId: number): ProjectAccount[] {
-  const rows = db
-    .prepare(
-      `SELECT COALESCE(f.bank, '') AS bank,
-              f.account_no AS account_no,
-              MAX(NULLIF(f.account_name, '')) AS account_name,
-              SUM(f.tx_count) AS tx_count,
-              fua.fund_use_id AS fund_use_id
-       FROM files f
-       JOIN tasks tk ON tk.id = f.task_id
-       LEFT JOIN fund_use_accounts fua
-         ON fua.project_id = tk.project_id
-        AND fua.account_no = f.account_no
-        AND fua.bank = COALESCE(f.bank, '')
-       WHERE tk.project_id = ?
-         AND f.account_no IS NOT NULL AND TRIM(f.account_no) != ''
-       GROUP BY COALESCE(f.bank, ''), f.account_no
-       ORDER BY bank, account_no`,
-    )
-    .all(projectId) as Record<string, unknown>[];
-  return rows.map((r) => ({
+function toProjectAccount(r: Record<string, unknown>): ProjectAccount {
+  return {
+    id: Number(r.id),
+    holder: String(r.holder ?? ''),
     bank: String(r.bank ?? ''),
     accountNo: String(r.account_no),
-    accountName: (r.account_name as string | null) || undefined,
-    txCount: Number(r.tx_count ?? 0),
     fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
-  }));
+    fundUse: (r.fund_use_name as string | null) || undefined,
+  };
+}
+
+function listProjectAccounts(projectId: number): ProjectAccount[] {
+  return (
+    db
+      .prepare(
+        `SELECT fua.*, fu.name AS fund_use_name
+         FROM fund_use_accounts fua
+         LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
+         WHERE fua.project_id = ?
+         ORDER BY fua.bank, fua.account_no`,
+      )
+      .all(projectId) as Record<string, unknown>[]
+  ).map(toProjectAccount);
+}
+
+function readAccountBody(body: unknown): { holder: string; bank: string; accountNo: string; key: string } | { error: string } {
+  const b = (body ?? {}) as { holder?: string; bank?: string; accountNo?: string };
+  const holder = String(b.holder ?? '').trim();
+  const bank = String(b.bank ?? '').trim();
+  const accountNo = String(b.accountNo ?? '').trim();
+  if (!holder || !bank || !accountNo) return { error: '请填写账户主体、开户行和账号' };
+  const key = normAccountNo(accountNo);
+  if (!key) return { error: '请填写账户主体、开户行和账号' };
+  return { holder, bank, accountNo, key };
 }
 
 export const projectsRouter = Router();
@@ -169,25 +176,92 @@ projectsRouter.delete('/:id/uses/:useId', (req, res) => {
   res.json({ ok: true });
 });
 
+projectsRouter.post('/:id/accounts', (req, res) => {
+  const projectId = Number(req.params.id);
+  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
+  if (!project) return res.status(404).json({ error: '项目不存在' });
+  const parsed = readAccountBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  const taken = db
+    .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ?')
+    .get(projectId, parsed.key);
+  if (taken) return res.status(409).json({ error: '已有这个账号' });
+  try {
+    const r = db
+      .prepare(
+        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?)`,
+      )
+      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, now(), now());
+    const row = db
+      .prepare(
+        `SELECT fua.*, fu.name AS fund_use_name FROM fund_use_accounts fua
+         LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id WHERE fua.id = ?`,
+      )
+      .get(Number(r.lastInsertRowid)) as Record<string, unknown>;
+    res.json(toProjectAccount(row));
+  } catch {
+    res.status(409).json({ error: '已有这个账号' });
+  }
+});
+
+projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
+  const projectId = Number(req.params.id);
+  const accountId = Number(req.params.accountId);
+  const existing = db
+    .prepare('SELECT id FROM fund_use_accounts WHERE id = ? AND project_id = ?')
+    .get(accountId, projectId);
+  if (!existing) return res.status(404).json({ error: '募资专户不存在' });
+  const parsed = readAccountBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  const taken = db
+    .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ? AND id != ?')
+    .get(projectId, parsed.key, accountId);
+  if (taken) return res.status(409).json({ error: '已有这个账号' });
+  try {
+    db.prepare(
+      `UPDATE fund_use_accounts
+       SET holder = ?, bank = ?, account_no = ?, account_key = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, now(), accountId);
+  } catch {
+    return res.status(409).json({ error: '已有这个账号' });
+  }
+  const row = db
+    .prepare(
+      `SELECT fua.*, fu.name AS fund_use_name FROM fund_use_accounts fua
+       LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id WHERE fua.id = ?`,
+    )
+    .get(accountId) as Record<string, unknown>;
+  res.json(toProjectAccount(row));
+});
+
+projectsRouter.delete('/:id/accounts/:accountId', (req, res) => {
+  const r = db
+    .prepare('DELETE FROM fund_use_accounts WHERE id = ? AND project_id = ?')
+    .run(Number(req.params.accountId), Number(req.params.id));
+  if (r.changes === 0) return res.status(404).json({ error: '募资专户不存在' });
+  res.json({ ok: true });
+});
+
 projectsRouter.put('/:id/accounts', (req, res) => {
   const projectId = Number(req.params.id);
   const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
   if (!project) return res.status(404).json({ error: '项目不存在' });
-  const body = (req.body ?? {}) as { bank?: string; accountNo?: string; fundUseId?: number | null | '' };
-  const accountNo = String(body.accountNo ?? '').trim();
-  if (!accountNo) return res.status(400).json({ error: '缺少账号' });
-  const bank = String(body.bank ?? '').trim();
+  const body = (req.body ?? {}) as { accountNo?: string; fundUseId?: number | null | '' };
+  const key = normAccountNo(body.accountNo);
+  if (!key) return res.status(400).json({ error: '缺少账号' });
   const fundUseId = body.fundUseId == null || body.fundUseId === '' ? null : Number(body.fundUseId);
   if (fundUseId != null && !Number.isFinite(fundUseId)) return res.status(400).json({ error: '募投项目不存在' });
   if (fundUseId != null) {
     const use = db.prepare('SELECT id FROM fund_uses WHERE id = ? AND project_id = ?').get(fundUseId, projectId);
     if (!use) return res.status(400).json({ error: '募投项目不存在' });
   }
-  db.prepare(
-    `INSERT INTO fund_use_accounts(project_id, bank, account_no, fund_use_id, updated_at)
-     VALUES(?,?,?,?,?)
-     ON CONFLICT(project_id, bank, account_no) DO UPDATE SET fund_use_id = excluded.fund_use_id, updated_at = excluded.updated_at`,
-  ).run(projectId, bank, accountNo, fundUseId, now());
+  const row = db
+    .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ?')
+    .get(projectId, key) as { id: number } | undefined;
+  if (!row) return res.status(404).json({ error: '请先新建募资专户' });
+  db.prepare('UPDATE fund_use_accounts SET fund_use_id = ?, updated_at = ? WHERE id = ?').run(fundUseId, now(), row.id);
   res.json({ ok: true });
 });
 
@@ -249,7 +323,13 @@ tasksRouter.get('/:id', (req, res) => {
     ? { id: Number(projectRow.id), name: projectRow.name as string, taskCount: 0 }
     : { id: Number(row.project_id), name: '未知项目', taskCount: 0 };
   const client: ClientBrief = clientRow ? { id: Number(clientRow.id), name: clientRow.name } : { id: 0, name: '未知客户' };
-  res.json({ task: toTaskView(row), project, client, files });
+  res.json({
+    task: toTaskView(row),
+    project,
+    client,
+    files,
+    accounts: listProjectAccounts(Number(row.project_id)),
+  });
 });
 
 /** 重新扫描任务目录 PDF（放入新文件后调用，幂等；M2 起新文件自动入解析队列） */

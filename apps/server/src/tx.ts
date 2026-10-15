@@ -51,8 +51,8 @@ JOIN projects p ON p.id = tk.project_id
 JOIN clients c ON c.id = p.client_id
 LEFT JOIN fund_use_accounts fua
   ON fua.project_id = tk.project_id
- AND fua.account_no = f.account_no
- AND fua.bank = COALESCE(f.bank, '')
+ AND fua.account_key != ''
+ AND fua.account_key = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(f.account_no, ''), ' ', ''), char(9), ''), '-', ''), '　', ''))
 LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id`;
 
 const BASE_SELECT = `

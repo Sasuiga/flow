@@ -1,3 +1,4 @@
+import { normAccountNo } from '@flow/shared';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -174,15 +175,39 @@ CREATE TABLE IF NOT EXISTS fund_uses (
 CREATE TABLE IF NOT EXISTS fund_use_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  holder TEXT NOT NULL DEFAULT '',
   bank TEXT NOT NULL DEFAULT '',
   account_no TEXT NOT NULL,
+  account_key TEXT NOT NULL DEFAULT '',
   fund_use_id INTEGER REFERENCES fund_uses(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
   UNIQUE(project_id, bank, account_no)
 );
 CREATE INDEX IF NOT EXISTS idx_fund_uses_project ON fund_uses(project_id);
 CREATE INDEX IF NOT EXISTS idx_fund_use_accounts_project ON fund_use_accounts(project_id);
 `);
+for (const [col, ddl] of [
+  ['holder', `ALTER TABLE fund_use_accounts ADD COLUMN holder TEXT NOT NULL DEFAULT ''`],
+  ['account_key', `ALTER TABLE fund_use_accounts ADD COLUMN account_key TEXT NOT NULL DEFAULT ''`],
+  ['created_at', `ALTER TABLE fund_use_accounts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`],
+] as const) {
+  if (!tableCols('fund_use_accounts').includes(col)) db.exec(ddl);
+}
+db.exec(`UPDATE fund_use_accounts SET created_at = updated_at WHERE created_at = ''`);
+{
+  const fillKey = db.prepare('UPDATE fund_use_accounts SET account_key = ? WHERE id = ?');
+  for (const row of db.prepare('SELECT id, account_no, account_key FROM fund_use_accounts').all() as {
+    id: number;
+    account_no: string;
+    account_key: string;
+  }[]) {
+    if (!row.account_key) fillKey.run(normAccountNo(row.account_no) || `row-${row.id}`, row.id);
+  }
+}
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_use_accounts_key ON fund_use_accounts(project_id, account_key)',
+);
 // 遗留项目（client_id 为空）挂到自动创建的「遗留客户」下，避免 NULL 外键
 const legacy = db.prepare('SELECT COUNT(*) AS c FROM projects WHERE client_id IS NULL').get() as { c: number };
 if (legacy.c > 0) {

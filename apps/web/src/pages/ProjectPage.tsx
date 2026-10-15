@@ -33,6 +33,10 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [renameName, setRenameName] = useState('');
   const [attachId, setAttachId] = useState<number | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
+  const [acctEdit, setAcctEdit] = useState<ProjectAccount | 'new' | null>(null);
+  const [holder, setHolder] = useState('');
+  const [acctBank, setAcctBank] = useState('');
+  const [acctNo, setAcctNo] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -165,6 +169,45 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
+  function openAccount(row: ProjectAccount | 'new') {
+    setAcctEdit(row);
+    setHolder(row === 'new' ? '' : row.holder);
+    setAcctBank(row === 'new' ? '' : row.bank);
+    setAcctNo(row === 'new' ? '' : row.accountNo);
+  }
+
+  async function saveAccount() {
+    if (!project || !acctEdit) return;
+    const body = { holder: holder.trim(), bank: acctBank.trim(), accountNo: acctNo.trim() };
+    if (!body.holder || !body.bank || !body.accountNo) return;
+    setUseBusy(true);
+    try {
+      if (acctEdit === 'new') await api.createAccount(project.id, body);
+      else await api.updateAccount(project.id, acctEdit.id, body);
+      setAcctEdit(null);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUseBusy(false);
+    }
+  }
+
+  async function removeAccount(a: ProjectAccount) {
+    if (!project) return;
+    const ok = await confirmDialog(`删除募资专户「${a.holder}」？挂在上面的募投项目会解开，流水不动。`, {
+      title: '删除募资专户',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteAccount(project.id, a.id);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   const attachUse = attachId != null ? detail?.fundUses.find((u) => u.id === attachId) : undefined;
   const attached = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId === attachUse.id) : [];
   const freeAccounts = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId == null) : [];
@@ -185,6 +228,60 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
 
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
+
+      {detail ? (
+        <section className="page-section">
+          <div className="page-header" style={{ marginBottom: 12 }}>
+            <div>
+              <h1 style={{ fontSize: 18, marginBottom: 2 }}>募资专户</h1>
+            </div>
+            <div className="page-header-actions">
+              <button className="primary-button" disabled={!project} onClick={() => openAccount('new')}>
+                <Plus size={15} /> 新建募资专户
+              </button>
+            </div>
+          </div>
+          {detail.accounts.length === 0 ? (
+            <div className="flow-empty">
+              <h3>还没有募资专户</h3>
+              <p>先录入账户主体、开户行和账号。各期流水会按这份清单核对是否到齐。</p>
+              <div className="flow-empty-actions">
+                <button className="primary-button" onClick={() => openAccount('new')}>
+                  <Plus size={15} /> 新建募资专户
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <ListRowHeader
+                withMenu
+                cols={[
+                  { label: '账户主体', cls: 'list-row-col-title' },
+                  { label: '开户行', cls: 'list-row-col-meta' },
+                  { label: '账号', cls: 'list-row-col-account' },
+                  { label: '募投项目', cls: 'list-row-col-meta' },
+                ]}
+              />
+              {detail.accounts.map((a) => (
+                <ListRow
+                  key={a.id}
+                  title={a.holder}
+                  onClick={() => openAccount(a)}
+                  menuItems={[
+                    { label: '修改', onClick: () => openAccount(a) },
+                    { label: '删除', danger: true, onClick: () => void removeAccount(a) },
+                  ]}
+                >
+                  <span className="list-row-col-title">{a.holder}</span>
+                  <span className="list-row-col-meta">{a.bank}</span>
+                  <span className="list-row-col-account">{a.accountNo}</span>
+                  <span className="list-row-col-meta">{a.fundUse || '—'}</span>
+                </ListRow>
+              ))}
+            </>
+          )}
+        </section>
+      ) : null}
 
       {detail ? (
         <section className="page-section">
@@ -329,6 +426,47 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         ) : null
       ) : null}
 
+      {acctEdit ? (
+        <Modal
+          title={acctEdit === 'new' ? '新建募资专户' : '修改募资专户'}
+          onClose={() => !useBusy && setAcctEdit(null)}
+          disableDismiss={useBusy}
+          width={440}
+        >
+          <div className="field">
+            <span className="field-label">账户主体</span>
+            <input className="input" value={holder} autoFocus onChange={(e) => setHolder(e.target.value)} />
+          </div>
+          <div className="field">
+            <span className="field-label">开户行</span>
+            <input className="input" value={acctBank} onChange={(e) => setAcctBank(e.target.value)} />
+          </div>
+          <div className="field">
+            <span className="field-label">账号</span>
+            <input
+              className="input mono"
+              value={acctNo}
+              onChange={(e) => setAcctNo(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveAccount();
+              }}
+            />
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button" disabled={useBusy} onClick={() => setAcctEdit(null)}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={useBusy || !holder.trim() || !acctBank.trim() || !acctNo.trim()}
+              onClick={() => void saveAccount()}
+            >
+              {acctEdit === 'new' ? '创建' : '保存'}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
       {useOpen ? (
         <Modal title="新建募投项目" onClose={() => !useBusy && setUseOpen(false)} disableDismiss={useBusy} width={420}>
           <div className="field">
@@ -388,15 +526,15 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         <Modal title={attachUse.name} onClose={() => !useBusy && setAttachId(null)} disableDismiss={useBusy} width={520}>
           <div className="pick-label">已挂账户</div>
           {attached.length === 0 ? (
-            <p className="pick-empty">{detail && detail.accounts.length === 0 ? '解析出账户后可以挂到这里' : '还没有账户'}</p>
+            <p className="pick-empty">{detail && detail.accounts.length === 0 ? '先录入募资专户，再挂到这里' : '还没有账户'}</p>
           ) : (
             <div className="pick-list">
               {attached.map((a) => (
                 <div className="pick-row" key={accountKey(a)}>
                   <span className="pick-row-main">
                     <span className="pick-row-name">
-                      {a.bank || '—'}
-                      {a.accountName ? ` · ${a.accountName}` : ''}
+                      {a.holder}
+                      {a.bank ? ` · ${a.bank}` : ''}
                     </span>
                     <span className="pick-row-no">{a.accountNo}</span>
                   </span>
@@ -415,7 +553,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
 
           {freeAccounts.length > 0 ? (
             <>
-              <div className="pick-label">未归集账户</div>
+              <div className="pick-label">可挂专户</div>
               <div className="pick-list">
                 {freeAccounts.map((a) => {
                   const key = accountKey(a);
@@ -429,8 +567,8 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                       />
                       <span className="pick-row-main">
                         <span className="pick-row-name">
-                          {a.bank || '—'}
-                          {a.accountName ? ` · ${a.accountName}` : ''}
+                          {a.holder}
+                          {a.bank ? ` · ${a.bank}` : ''}
                         </span>
                         <span className="pick-row-no">{a.accountNo}</span>
                       </span>

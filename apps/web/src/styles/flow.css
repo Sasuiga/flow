@@ -943,10 +943,35 @@ select.input {
 }
 
 .file-row-cols .list-row-col-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1 1 160px;
   font-weight: 500;
+}
+
+.file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--ui-font-mono);
   font-size: 12px;
+}
+
+.file-row-cols .chip {
+  flex: 0 0 auto;
+}
+
+.list-row-col-account {
+  flex: 0 0 auto;
+  min-width: 168px;
+  overflow: hidden;
+  font-family: var(--ui-font-mono);
+  font-size: 12px;
+  color: var(--ui-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .file-row-cols .list-row-col-count {
