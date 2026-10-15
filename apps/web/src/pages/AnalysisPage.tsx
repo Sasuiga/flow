@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
-import { FlowLink, FlowNode, FlowPartyLine, FlowResponse, FlowResult, TaskBrief } from '@flow/shared';
+import { FlowLine, FlowLink, FlowNode, FlowPartyLine, FlowResponse, FlowResult, TaskBrief } from '@flow/shared';
 import { api } from '../api';
 import { formatDateTime, formatMoney } from '../lib/format';
 
@@ -320,6 +320,7 @@ function Sparkline({
 }
 
 function FlowTables({ result }: { result: FlowResult }) {
+  const [open, setOpen] = useState<string | null>(null);
   const byId = new Map(result.nodes.map((n) => [n.id, n]));
   const dedicated = result.links.filter((l) => l.kind === 'dedicated');
   const own = result.links.filter((l) => l.kind === 'own');
@@ -388,18 +389,29 @@ function FlowTables({ result }: { result: FlowResult }) {
                 const inn = l.from.startsWith('acct:') ? l.inAmount : l.outAmount;
                 const outN = l.from.startsWith('acct:') ? l.outCount : l.inCount;
                 const inN = l.from.startsWith('acct:') ? l.inCount : l.outCount;
+                const opened = open === l.id;
+                const lines = [...(l.lines ?? [])].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || a.id - b.id);
                 return (
-                  <tr key={l.id}>
-                    <td>{nodeName(acct)}</td>
-                    <td>
-                      {other?.title}
-                      {other?.tail ? ` · ${other.tail}` : ''}
-                      {other?.sub && other.sub !== other.tail ? <span className="flow-sub">{other.sub}</span> : null}
-                    </td>
-                    <td>{out ? `${formatMoney(out)} · ${outN} 笔` : '—'}</td>
-                    <td>{inn ? `${formatMoney(inn)} · ${inN} 笔` : '—'}</td>
-                    <td>{netText(out, inn)}</td>
-                  </tr>
+                  <Fragment key={l.id}>
+                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => setOpen(opened ? null : l.id)}>
+                      <td>{nodeName(acct)}</td>
+                      <td>
+                        {other?.title}
+                        {other?.tail ? ` · ${other.tail}` : ''}
+                        {other?.sub && other.sub !== other.tail ? <span className="flow-sub">{other.sub}</span> : null}
+                      </td>
+                      <td>{out ? `${formatMoney(out)} · ${outN} 笔` : '—'}</td>
+                      <td>{inn ? `${formatMoney(inn)} · ${inN} 笔` : '—'}</td>
+                      <td>{netText(out, inn)}</td>
+                    </tr>
+                    {opened ? (
+                      <tr className="flow-lines-row">
+                        <td colSpan={5}>
+                          <LineList lines={lines} />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -429,6 +441,38 @@ function FlowTables({ result }: { result: FlowResult }) {
         </section>
       ) : null}
     </>
+  );
+}
+
+function LineList({ lines }: { lines: FlowLine[] }) {
+  if (lines.length === 0) return <div className="flow-lines-empty">没有可展开的流水</div>;
+  return (
+    <table className="flow-lines">
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>方向</th>
+          <th>金额</th>
+          <th>摘要</th>
+          <th>对手方</th>
+          <th>对手账号</th>
+          <th>余额</th>
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line) => (
+          <tr key={line.id}>
+            <td>{line.date || '—'}</td>
+            <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
+            <td>{formatMoney(line.amount)}</td>
+            <td>{line.summary || '—'}</td>
+            <td>{line.counterparty || '—'}</td>
+            <td>{line.counterpartyAccount || '—'}</td>
+            <td>{line.balance == null ? '—' : formatMoney(line.balance)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

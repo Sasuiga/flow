@@ -339,6 +339,17 @@ export interface FlowNode {
   sub?: string;
 }
 
+export interface FlowLine {
+  id: number;
+  date?: string;
+  direction: 'in' | 'out';
+  amount: number;
+  summary?: string;
+  counterparty?: string;
+  counterpartyAccount?: string;
+  balance?: number;
+}
+
 export interface FlowLink {
   id: string;
   from: string;
@@ -353,6 +364,8 @@ export interface FlowLink {
   inAmount: number;
   inCount: number;
   inBoth: number;
+  /** 组成这一行的流水，供复查 */
+  lines?: FlowLine[];
 }
 
 export interface FlowMove {

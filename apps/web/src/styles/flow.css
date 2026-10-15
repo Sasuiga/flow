@@ -1794,6 +1794,58 @@ select.input {
   opacity: 0.35;
 }
 
+.flow-sheet tr.hit {
+  cursor: pointer;
+}
+
+.flow-sheet tr.hit:hover td,
+.flow-sheet tr.hit.open td {
+  background: #f7f8fc;
+}
+
+.flow-lines-row td {
+  padding: 0 10px 10px;
+  background: #f7f8fc;
+}
+
+.flow-lines {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+}
+
+.flow-lines th,
+.flow-lines td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ui-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.flow-lines th {
+  color: var(--ui-faint);
+  font-weight: 500;
+}
+
+.flow-lines td.in {
+  color: #1f7a4d;
+  font-weight: 600;
+}
+
+.flow-lines td.out {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.flow-lines-empty {
+  padding: 8px 0;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
 .flow-sub {
   display: block;
   margin-top: 2px;

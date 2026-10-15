@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import {
   FlowBalance,
   FlowKind,
+  FlowLine,
   FlowLink,
   FlowMove,
   FlowNode,
@@ -168,7 +169,7 @@ function loadContext(taskId: number): {
 
 function signatureOf(accounts: Acct[], rows: Record<string, unknown>[]): string {
   const body = [
-    'flow-v3',
+    'flow-v4',
     accounts
       .map((a) => a.key)
       .sort()
@@ -392,7 +393,29 @@ function acctNodeId(key: string): string {
   return `acct:${key}`;
 }
 
-function assemble(taskId: number, taskName: string, clientName: string, accounts: Acct[], groups: Group[], skipped: number, source: FlowResult['source']): FlowResult {
+function toLine(r: Record<string, unknown>): FlowLine {
+  return {
+    id: Number(r.id),
+    date: String(r.date ?? '').slice(0, 10) || undefined,
+    direction: r.direction === 'in' ? 'in' : 'out',
+    amount: Number(r.amount) || 0,
+    summary: String(r.summary ?? '').trim() || undefined,
+    counterparty: String(r.counterparty ?? '').trim() || undefined,
+    counterpartyAccount: String(r.counterparty_account ?? '').trim() || undefined,
+    balance: r.balance == null || r.balance === '' ? undefined : Number(r.balance),
+  };
+}
+
+function assemble(
+  taskId: number,
+  taskName: string,
+  clientName: string,
+  accounts: Acct[],
+  groups: Group[],
+  skipped: number,
+  source: FlowResult['source'],
+  rowById: Map<number, Record<string, unknown>>,
+): FlowResult {
   const byKey = new Map(accounts.map((a) => [a.key, a]));
   const nodes = new Map<string, FlowNode>();
   const links: FlowLink[] = [];
@@ -411,7 +434,7 @@ function assemble(taskId: number, taskName: string, clientName: string, accounts
     return id;
   };
 
-  const addFlow = (payer: string, payee: string, kind: FlowKind, amount: number, count: number, both: number) => {
+  const addFlow = (payer: string, payee: string, kind: FlowKind, amount: number, count: number, both: number, lines?: FlowLine[]) => {
     if (count <= 0 || amount <= 0) return;
     let link = links.find((l) => (l.from === payer && l.to === payee) || (l.from === payee && l.to === payer));
     if (!link) {
@@ -429,6 +452,7 @@ function assemble(taskId: number, taskName: string, clientName: string, accounts
       };
       links.push(link);
     }
+    if (lines?.length) link.lines = [...(link.lines ?? []), ...lines];
     if (link.from === payer && link.to === payee) {
       link.outAmount += amount;
       link.outCount += count;
@@ -466,7 +490,11 @@ function assemble(taskId: number, taskName: string, clientName: string, accounts
       }
       const payer = g.direction === 'out' ? stmtId : id;
       const payee = g.direction === 'out' ? id : stmtId;
-      addFlow(payer, payee, 'own', amt, g.liveCount, 0);
+      const lines = g.ids.flatMap((id) => {
+        const row = rowById.get(id);
+        return row ? [toLine(row)] : [];
+      });
+      addFlow(payer, payee, 'own', amt, g.liveCount, 0, lines);
       continue;
     }
     if (g.kind === 'treasury') {
@@ -662,7 +690,8 @@ async function compute(taskId: number): Promise<FlowResponse> {
   }
   fallbackOpen(groups, ctx.clientName, ctx.accounts);
   pairDedicated(groups, ctx.accounts);
-  const result = assemble(taskId, ctx.taskName, ctx.clientName, ctx.accounts, groups, skipped, source);
+  const rowById = new Map(ctx.rows.map((r) => [Number(r.id), r]));
+  const result = assemble(taskId, ctx.taskName, ctx.clientName, ctx.accounts, groups, skipped, source, rowById);
   result.moves = buildMoves(groups, ctx.accounts);
   result.balances = buildBalances(ctx.rows, ctx.accounts);
   if (fallback) result.fallback = true;
