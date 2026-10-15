@@ -107,7 +107,6 @@ export function ClientPage({ clientId, onBack, onOpenProject }: ClientPageProps)
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>融资项目</h1>
-          <p>一个客户可有多个融资事项（IPO / 再融资 / 可转债…），报告期任务建在项目下</p>
         </div>
         <div className="page-header-actions">
           <button className="primary-button" disabled={!client} onClick={() => setCreateOpen(true)}>
