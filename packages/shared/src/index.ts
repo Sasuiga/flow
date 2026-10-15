@@ -91,8 +91,13 @@ export interface CreateEntityInput {
 
 /* ---------- fs（目录选择器，对齐 Avalon fs:list/fs:create-dir 语义） ---------- */
 
+/** Windows 目录选择器里「此电脑」的虚拟路径，列出全部盘符 */
+export const FS_DRIVES_PATH = '::drives';
+
 export interface FsRootInfo {
   root: string;
+  /** Windows 本机可以列出 C:、D: 等盘符 */
+  canListDrives?: boolean;
 }
 
 export interface FsListing {

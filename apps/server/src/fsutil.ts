@@ -1,4 +1,5 @@
 import {
+  accessSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,7 +9,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { EntityLocation } from '@flow/shared';
 
 /** 目录标记（对齐 Avalon 的 .avalon/project.md 模式：目录是真身，SQLite 只是索引） */
@@ -126,4 +127,40 @@ export function dirExists(dir: string): boolean {
 /** 目录浏览器根：FLOW_DOC_ROOT（微服部署=网盘工作目录）> 用户主目录 */
 export function fsRoot(): string {
   return process.env.FLOW_DOC_ROOT?.trim() || os.homedir();
+}
+
+/** `C:\` 这种盘符根。再往上是「此电脑」，不是 dirname（dirname 会停在原地） */
+export function isWindowsDriveRoot(p: string): boolean {
+  return process.platform === 'win32' && /^[A-Za-z]:\\$/.test(p);
+}
+
+/** 本机已挂载的盘符。fsutil 只问系统，不会去摸光驱或不存在的盘 */
+export function listWindowsDrives(): { name: string; path: string }[] {
+  if (process.platform !== 'win32') return [];
+  try {
+    const out = execFileSync('fsutil', ['fsinfo', 'drives'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 4000,
+    });
+    const letters = [
+      ...new Set((out.match(/[A-Za-z]:\\/g) ?? []).map((d) => d[0].toUpperCase())),
+    ].sort();
+    if (letters.length > 0) {
+      return letters.map((ch) => ({ name: `${ch}:`, path: `${ch}:\\` }));
+    }
+  } catch {
+    // 退回逐个探测
+  }
+  const found: { name: string; path: string }[] = [];
+  for (const ch of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+    const root = `${ch}:\\`;
+    try {
+      accessSync(root);
+      found.push({ name: `${ch}:`, path: root });
+    } catch {
+      // 盘符不存在
+    }
+  }
+  return found;
 }
