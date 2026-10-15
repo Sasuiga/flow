@@ -1586,3 +1586,122 @@ select.input {
 .review-form .input {
   width: 140px;
 }
+
+.flow-note {
+  margin: 4px 12px 8px;
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 4px 12px 0;
+  color: var(--ui-muted, #5c6578);
+  font-size: 12px;
+}
+
+.flow-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.flow-chart-wrap {
+  overflow-x: auto;
+}
+
+.flow-chart {
+  display: block;
+  width: 100%;
+  min-width: 760px;
+  height: auto;
+}
+
+.flow-edge-label {
+  font-size: 11px;
+  fill: #243044;
+  stroke: #fff;
+  stroke-width: 4px;
+  paint-order: stroke;
+}
+
+.flow-node-dedicated {
+  fill: #fff;
+  stroke: #3d5ccc;
+  stroke-width: 2;
+}
+
+.flow-node-own {
+  fill: #fff7ed;
+  stroke: #c2410c;
+  stroke-width: 2;
+}
+
+.flow-node-external,
+.flow-node-bucket {
+  fill: #fff;
+  stroke: #64748b;
+  stroke-width: 1.5;
+}
+
+.flow-node-bucket {
+  stroke-dasharray: 4 3;
+}
+
+.flow-node-treasury {
+  fill: #f0fdfa;
+  stroke: #0f766e;
+  stroke-width: 1.5;
+}
+
+.flow-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  fill: #1c2230;
+}
+
+.flow-node-tail,
+.flow-side-label {
+  font-size: 11px;
+  fill: #3c4658;
+}
+
+.flow-sheet {
+  width: calc(100% - 16px);
+  margin: 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.flow-sheet th,
+.flow-sheet td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ui-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.flow-sheet th {
+  color: var(--ui-faint);
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.flow-sheet tr.dim {
+  opacity: 0.35;
+}
+
+.flow-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--ui-faint);
+  font-size: 12px;
+}

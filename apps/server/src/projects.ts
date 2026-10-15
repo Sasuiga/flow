@@ -3,6 +3,7 @@ import { db } from './db.js';
 import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfFiles } from './fsutil.js';
 import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
+import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
 import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
 
@@ -330,6 +331,21 @@ projectsRouter.delete('/:id', (req, res) => {
 /* ---------- 任务路由（挂在 /api/tasks 下，由 main.ts 单独 mount） ---------- */
 
 export const tasksRouter = Router();
+
+tasksRouter.get('/:id/flow', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  res.json(getFlow(id));
+});
+
+tasksRouter.post('/:id/flow', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  const force = Boolean((req.body as { force?: boolean } | undefined)?.force);
+  void runFlow(id, force)
+    .then((out) => res.json(out))
+    .catch((e: Error) => res.status(500).json({ error: e.message || '分析失败' }));
+});
 
 tasksRouter.get('/:id', (req, res) => {
   const id = Number(req.params.id);

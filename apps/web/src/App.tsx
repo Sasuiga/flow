@@ -8,6 +8,7 @@ import Placeholder from './pages/Placeholder';
 import SettingsPage from './pages/Settings';
 import TransactionsPage from './pages/Transactions';
 import ReviewQueue from './pages/ReviewQueue';
+import AnalysisPage from './pages/AnalysisPage';
 import { api } from './api';
 import { TaskBrief } from '@flow/shared';
 
@@ -17,6 +18,7 @@ type View =
   | { k: 'project'; id: number }
   | { k: 'task'; id: number }
   | { k: 'tx'; taskId?: number; bank?: string; accountNo?: string }
+  | { k: 'flow' }
   | { k: 'review' }
   | { k: 'rules' }
   | { k: 'settings' };
@@ -28,6 +30,7 @@ type View =
 export default function App() {
   const [view, setView] = useState<View>(() => {
     // 深链：#/client/1 /#/project/1 /#/task/1 /#/tx?task=1&file=2（刷新/分享保持位置）
+    if (location.hash === '#/flow') return { k: 'flow' };
     const tx = location.hash.match(/^#\/tx(?:\?(.*))?$/);
     if (tx) {
       const qs = new URLSearchParams(tx[1] ?? '');
@@ -58,12 +61,15 @@ export default function App() {
   const [recentTasks, setRecentTasks] = useState<TaskBrief[]>([]);
 
   const chromeActive: FlowView =
-    view.k === 'tx' || view.k === 'review' || view.k === 'rules' || view.k === 'settings' ? view.k : 'home';
+    view.k === 'tx' || view.k === 'flow' || view.k === 'review' || view.k === 'rules' || view.k === 'settings'
+      ? view.k
+      : 'home';
 
   const nav = (v: FlowView) => {
     location.hash = '';
     if (v === 'settings') setView({ k: 'settings' });
     else if (v === 'tx') setView({ k: 'tx', taskId: ctxTask?.id });
+    else if (v === 'flow') setView({ k: 'flow' });
     else if (v === 'review') setView({ k: 'review' });
     else if (v === 'rules') setView({ k: 'rules' });
     else setView({ k: 'home' });
@@ -88,6 +94,7 @@ export default function App() {
   // 同步 hash 便于刷新/分享定位
   const syncHash = (v: View) => {
     if (v.k === 'client' || v.k === 'project' || v.k === 'task') location.hash = `/${v.k}/${v.id}`;
+    else if (v.k === 'flow') location.hash = '/flow';
     else if (v.k === 'tx' && (v.taskId || v.bank || v.accountNo)) {
       const qs = new URLSearchParams();
       if (v.taskId) qs.set('task', String(v.taskId));
@@ -135,6 +142,11 @@ export default function App() {
       cancelled = true;
     };
   }, [view, recentTasks]);
+
+  useEffect(() => {
+    if (view.k !== 'flow' || ctxTask || recentTasks.length === 0) return;
+    setCtxTask(recentTasks[0]);
+  }, [view, ctxTask, recentTasks]);
 
   const chromeTasks =
     ctxTask && !recentTasks.some((t) => t.id === ctxTask.id) ? [ctxTask, ...recentTasks] : recentTasks;
@@ -189,6 +201,7 @@ export default function App() {
             initialAccountNo={view.accountNo}
           />
         )}
+        {view.k === 'flow' && <AnalysisPage task={ctxTask} />}
         {view.k === 'review' && <ReviewQueue taskId={ctxTask?.id} />}
         {view.k === 'rules' && (
           <Placeholder

@@ -21,6 +21,7 @@ import {
   TxRow,
   FundUse,
   ProjectAccount,
+  FlowResponse,
 } from '@flow/shared';
 
 export interface LlmModelsResult {
@@ -118,6 +119,9 @@ export const api = {
 
   /* ---------- 任务 ---------- */
   getTask: (id: number) => j<TaskDetail>(`/api/tasks/${id}`),
+  getFlow: (id: number) => j<FlowResponse>(`/api/tasks/${id}/flow`),
+  runFlow: (id: number, force = false) =>
+    j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force }) }),
   deleteTask: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   refreshTask: (id: number) => j<RefreshResult>(`/api/tasks/${id}/refresh`, { method: 'POST' }),
   openTaskFolder: (id: number) => j<{ ok: boolean }>(`/api/tasks/${id}/open`, { method: 'POST' }),

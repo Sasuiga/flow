@@ -324,6 +324,73 @@ export interface DashboardSummary {
   byCategory: { category: string; count: number; amount: number }[];
 }
 
+/* ---------- 资金流向（分析页） ---------- */
+
+export type FlowKind = 'dedicated' | 'own' | 'external' | 'treasury';
+
+export interface FlowNode {
+  id: string;
+  role: 'dedicated' | 'own' | 'external' | 'bucket' | 'treasury';
+  /** 圆内或标题：银行简称 / 对方简称 */
+  title: string;
+  /** 账号后四位 */
+  tail?: string;
+  /** 悬停或旁注 */
+  sub?: string;
+}
+
+export interface FlowLink {
+  id: string;
+  from: string;
+  to: string;
+  kind: FlowKind;
+  /** from → to，同一笔只计一次 */
+  outAmount: number;
+  outCount: number;
+  /** 其中双方专户流水都能对上的金额 */
+  outBoth: number;
+  /** to → from */
+  inAmount: number;
+  inCount: number;
+  inBoth: number;
+}
+
+export interface FlowPartyLine {
+  name: string;
+  accountNo?: string;
+  /** 发生这笔的募资专户节点，对外汇总时可空 */
+  accountTitle?: string;
+  count: number;
+  outAmount: number;
+  inAmount: number;
+  /** 频率低，画进「对外转出」 */
+  grouped?: boolean;
+}
+
+export interface FlowResult {
+  taskId: number;
+  taskName: string;
+  clientName: string;
+  generatedAt: string;
+  /** llm：模型参与了判断；rules：没有需要模型判断的组，或模型不可用 */
+  source: 'llm' | 'rules';
+  /** 问过模型但失败，退回账号和摘要规则 */
+  fallback?: boolean;
+  txCount: number;
+  /** 不是募资专户的流水，没有画进去 */
+  skipped: number;
+  nodes: FlowNode[];
+  links: FlowLink[];
+  externalLines: FlowPartyLine[];
+  treasuryLines: FlowPartyLine[];
+}
+
+export interface FlowResponse {
+  status: 'missing' | 'ready' | 'stale' | 'empty';
+  message?: string;
+  result?: FlowResult;
+}
+
 /* ---------- 默认配置 ---------- */
 
 export const DEFAULT_SETTINGS: Settings = {
