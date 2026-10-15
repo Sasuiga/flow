@@ -71,13 +71,23 @@ export async function llmChat(
   extraHeader: string | undefined,
   system: string,
   user: string,
-  opts: { jsonMode?: boolean; maxTokens?: number; timeoutMs?: number } = {},
+  opts: { jsonMode?: boolean; maxTokens?: number; timeoutMs?: number; images?: Buffer[] } = {},
 ): Promise<string> {
+  const userContent =
+    opts.images && opts.images.length > 0
+      ? [
+          { type: 'text', text: user },
+          ...opts.images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${img.toString('base64')}` },
+          })),
+        ]
+      : user;
   const body: Record<string, unknown> = {
     model,
     temperature: 0,
     stream: true,
-    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    messages: [{ role: 'system', content: system }, { role: 'user', content: userContent }],
     // Qwen3 系 thinking 模型：结构化提取任务关思考，省 token 且快（不支持的模型会忽略）
     chat_template_kwargs: { enable_thinking: false },
   };
@@ -92,7 +102,9 @@ export async function llmChat(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 900_000),
     });
   } catch (e) {
-    throw new Error(`LLM 端点不可达（${strip(base)}）：${(e as Error).message}`);
+    const err = e as Error & { cause?: { code?: string; message?: string } };
+    const cause = err.cause?.code || err.cause?.message;
+    throw new Error(`LLM 端点不可达（${strip(base)}）：${err.message}${cause ? `（${cause}）` : ''}`);
   }
   if (!res.ok) {
     const text = (await res.text().catch(() => '')).slice(0, 200);

@@ -4,8 +4,8 @@
  * 产物：flow-win-x64-<version>.zip
  *   ├─ node/                    便携 Node（win-x64，免安装）
  *   ├─ package.json             { "type": "module" }，让 main.js 以 ESM 启动
- *   ├─ node_modules/            运行时外部依赖（better-sqlite3 + bindings、pdfjs-dist、exceljs
- *   │                            及其传递依赖；better-sqlite3 换 win-x64 预编译）
+ *   ├─ node_modules/            运行时外部依赖（better-sqlite3 + bindings、pdfjs-dist、
+ *   │                            @napi-rs/canvas 与 win32 预编译、exceljs 及其传递依赖）
  *   ├─ main.js                  服务端 bundle（esbuild）
  *   ├─ web/                     前端静态（vite）
  *   ├─ data/                    数据目录（首启自动建 SQLite；备份=复制此目录）
@@ -41,7 +41,8 @@ function sh(cmd, cwd = ROOT) {
 /** pnpm-lock.yaml 里某个包的精确版本（打包必须钉死，才能对上预编译二进制） */
 function lockedVersion(name) {
   const lock = readFileSync(path.join(ROOT, 'pnpm-lock.yaml'), 'utf8');
-  const m = lock.match(new RegExp(`^  ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@(\\d+\\.\\d+\\.\\d+):`, 'm'));
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = lock.match(new RegExp(`^  '?${esc}@(\\d+\\.\\d+\\.\\d+)'?:`, 'm'));
   if (!m) throw new Error(`pnpm-lock.yaml 里找不到 ${name} 的版本`);
   return m[1];
 }
@@ -91,6 +92,7 @@ const runtimePkg = {
   dependencies: {
     'better-sqlite3': BSQ_VERSION,
     'pdfjs-dist': lockedVersion('pdfjs-dist'),
+    '@napi-rs/canvas': lockedVersion('@napi-rs/canvas'),
     exceljs: lockedVersion('exceljs'),
   },
 };
@@ -103,6 +105,23 @@ const nodeBin = path.join(bsqDir, 'build', 'Release', 'better_sqlite3.node');
 if (!existsSync(nodeBin)) throw new Error(`Windows 预编译不存在：${nodeBin}`);
 if (!existsSync(path.join(appDir, 'node_modules', 'bindings', 'package.json'))) {
   throw new Error('bindings 未装进 node_modules，better-sqlite3 无法加载原生模块');
+}
+// @napi-rs/canvas 的 win32 二进制是可选依赖，在 Linux 上 npm install 不会装它。
+// 按平台包名单独取 tarball，绿色包在 Windows 上才能把 PDF 渲染成图。
+const canvasWinName = '@napi-rs/canvas-win32-x64-msvc';
+const canvasWinVer = lockedVersion(canvasWinName);
+const canvasWinDir = path.join(appDir, 'node_modules', '@napi-rs', 'canvas-win32-x64-msvc');
+if (!existsSync(path.join(canvasWinDir, 'package.json'))) {
+  const canvasTgz = cachedOrDownload(
+    'canvas win32',
+    `https://registry.npmjs.org/@napi-rs/canvas-win32-x64-msvc/-/canvas-win32-x64-msvc-${canvasWinVer}.tgz`,
+    path.join(CACHE_DIR, `canvas-win32-${canvasWinVer}.tgz`),
+  );
+  mkdirSync(canvasWinDir, { recursive: true });
+  execSync(`tar -xzf "${canvasTgz}" -C "${canvasWinDir}" --strip-components 1`, { stdio: 'inherit' });
+}
+if (!existsSync(path.join(canvasWinDir, 'skia.win32-x64-msvc.node'))) {
+  throw new Error(`页面渲染组件不存在：${canvasWinDir}`);
 }
 
 console.log('assemble: main.js + web/ + release/ + data/');

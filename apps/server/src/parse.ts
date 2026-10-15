@@ -1,10 +1,10 @@
 /**
- * 解析管线（M2：文字层通道）
+ * 解析管线（视觉通道）
  *
- * PDF →（pdfjs 文字层）→ 布局保真文本（行重建：y 中心聚类，行内 x 排序，大间距制表符）
- * →（LLM 结构化，≤3 页/批 + 上批末 3 行衔接）→ 交易入库 + 确定性质检
+ * PDF → 逐页渲染成 JPEG → 视觉模型按图读表 → 结构化 JSON → 余额复核 → 入库
  *
- * 扫描件（无文字层）在 M2 标记为 error「疑似扫描件」，M3 走 OCR 通道。
+ * 文字层会把空的支出/收入列丢掉，所以不再先判断是不是扫描件。
+ * 文字层提取函数仍留着，当前解析不走它。
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -148,9 +148,96 @@ export async function extractTextLines(
   return out;
 }
 
-/* ---------- LLM 结构化（§5.2：单批 ≤3 页 + 上页末 3 行衔接，温度 0，严格 JSON） ---------- */
+/* ---------- 渲染（全部页面先转图，再交给视觉模型；不区分扫描件） ---------- */
 
-const BATCH_PAGES = 3;
+export interface PageImage {
+  page: number;
+  jpeg: Buffer;
+}
+
+const RENDER_LONG_EDGE = 2200;
+
+interface CanvasModule {
+  createCanvas(width: number, height: number): {
+    width: number;
+    height: number;
+    toBuffer(mime: 'image/jpeg', quality?: number): Buffer;
+  };
+}
+
+async function loadCanvas(): Promise<CanvasModule> {
+  try {
+    return (await import('@napi-rs/canvas')) as CanvasModule;
+  } catch (e) {
+    throw new Error(`无法渲染页面，缺少 @napi-rs/canvas：${(e as Error).message}`);
+  }
+}
+
+async function openPdf(pdfPath: string) {
+  const pdfjs = await loadPdfjs();
+  const bytes = await readFile(pdfPath);
+  const urls = pdfjsResourceUrls();
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(bytes),
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    cMapData: true,
+    standardFontDataUrl: urls.standardFontDataUrl,
+    cMapUrl: urls.cMapUrl,
+    BinaryDataFactory: FSDataFactory,
+  } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
+  return task;
+}
+
+/** 每页渲染成一张 JPEG。长边约 2200 像素，表格线还在，体积适合视觉模型。 */
+export async function renderPdfPages(
+  pdfPath: string,
+  onPage?: (done: number, total: number) => void,
+): Promise<PageImage[]> {
+  const canvasMod = await loadCanvas();
+  const task = await openPdf(pdfPath);
+  const doc = await task.promise;
+  const out: PageImage[] = [];
+  const total = doc.numPages;
+  onPage?.(0, total);
+  try {
+    for (let p = 1; p <= total; p++) {
+      const page = await doc.getPage(p);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(RENDER_LONG_EDGE / Math.max(base.width, base.height), 200 / 72);
+      const viewport = page.getViewport({ scale });
+      const canvas = canvasMod.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+      await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
+      out.push({ page: p, jpeg: canvas.toBuffer('image/jpeg', 82) });
+      page.cleanup?.();
+      onPage?.(p, total);
+    }
+  } finally {
+    await task.destroy();
+  }
+  return out;
+}
+
+/* ---------- LLM 结构化（视觉读图，一页一次，温度 0，严格 JSON） ---------- */
+
+const VISION_SYSTEM = `你是银行流水识别助手。输入是银行流水的一页图片。请只根据图上印出来的内容抽取，输出严格 JSON（不要代码块、不要解释）：
+{"bank":"银行名或null","account_no":"账号纯数字或null","account_name":"户名或null","period_start":"YYYY-MM-DD或null","period_end":"YYYY-MM-DD或null",
+"transactions":[{"line_no":1,"date":"YYYY-MM-DD","summary":"摘要","amount":123.45,"direction":"out","balance":123.45,
+"counterparty":"对方户名或null","counterparty_account":"对方账号或null","channel":"付款用途或渠道或null","confidence":0.95,
+"raw":"该行各列原文，用 | 隔开，空列留空"}]}
+规则（照抄图上的字，禁止用余额反推）：
+- 按表格从上到下，每一笔交易一条。单元格里户名折成两行仍是同一笔，不要拆开。
+- 支出列有数字 → direction="out"，amount=支出列印出的数字（正数，去掉千分位）。
+- 收入列有数字 → direction="in"，amount=收入列印出的数字（正数）。
+- 支出和收入是相邻两列。一列为空就不要把另一列的数字抄过去。
+- 禁止用「余额相对上一行的增减」反推金额或方向。即使余额对不上，也要照抄该行的支出、收入和余额。
+- balance 只填该行印出的余额，没有则 null。余额印成 0 就填 0，不要改成 null。
+- 日期、摘要、对方户名、对方账号、付款用途只从该行抄。日期统一 YYYY-MM-DD。付款用途放 channel。
+- raw 按列从左到右抄该行，列之间用「 | 」，空着的支出或收入列保留空位。
+- 表头、页眉页脚、页码、印章、本页合计、上页结转、承前余额不要输出。
+- line_no 从 1 起，按本页交易从上到下编号。
+- 看不清支出/收入列时：amount 填该行能看到的金额，direction 选更接近的一侧，confidence 降到 0.5 以下。不要编造一个能对上余额的数字。
+- 页眉的银行、账号、户名、查询期间填进顶层字段。本页没有就 null。`;
 
 const LLM_SYSTEM = `你是银行流水结构化助手。输入是银行流水 PDF 的布局保真文本（每页若干行，行首是行号，列之间用制表符分隔）。
 请按页面从上到下的顺序逐笔抽取，输出严格 JSON（不要代码块、不要解释）：
@@ -187,6 +274,8 @@ export interface NormTx {
   counterpartyAccount?: string;
   channel?: string;
   confidence: number;
+  /** 图上该行原文，列用 | 隔开，供肉眼对照 */
+  raw?: string;
   /** 质检备注（非空 → status=needs_review） */
   review: string;
 }
@@ -328,6 +417,7 @@ function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
       counterpartyAccount: cleanStr(t.counterparty_account),
       channel: cleanStr(t.channel),
       confidence: Math.max(0, Math.min(1, confidence)),
+      raw: cleanStr(t.raw),
       review: review.join('；'),
     });
   }
@@ -372,6 +462,45 @@ export async function structureBatch(
   };
 }
 
+/** 视觉模型读一页图，直接给出结构化交易。页码和行号按本页顺序写死，不信模型自己编号。 */
+export async function structurePageImage(
+  settings: { llmBase: string; llmModel: string; llmExtraHeader: string },
+  fileRel: string,
+  image: PageImage,
+  totalPages: number,
+  prevTail?: string,
+): Promise<StructuredBatch> {
+  const user =
+    `文件 ${fileRel}，第 ${image.page}/${totalPages} 页。\n` +
+    (prevTail ? `上一页最后几笔已经入库，不要重复输出：\n${prevTail}\n\n` : '') +
+    '请阅读这张流水图片，输出 JSON。';
+  const content = await llmChat(
+    settings.llmBase,
+    settings.llmModel,
+    settings.llmExtraHeader || undefined,
+    VISION_SYSTEM,
+    user,
+    { maxTokens: 12000, images: [image.jpeg] },
+  );
+  const j = extractJson<Record<string, unknown>>(content);
+  const rows = Array.isArray(j.transactions) ? j.transactions : [];
+  rows.forEach((row, i) => {
+    if (row && typeof row === 'object') {
+      const t = row as Record<string, unknown>;
+      t.page = image.page;
+      t.line_no = i + 1;
+    }
+  });
+  return {
+    bank: cleanStr(j.bank),
+    accountNo: cleanStr(j.account_no),
+    accountName: cleanStr(j.account_name),
+    periodStart: cleanStr(j.period_start),
+    periodEnd: cleanStr(j.period_end),
+    txs: normalizeTxs(rows, totalPages),
+  };
+}
+
 /* ---------- 文件解析编排 + 入库 ---------- */
 
 export interface ParseOutcome {
@@ -395,11 +524,9 @@ function setFile(fileId: number, patch: Record<string, unknown>): void {
 /** 解析过程写在 files.progress，任务页轮询展示。只描述正在做的事，不改交易内容。 */
 const PARSE_STEPS = [
   ['read', '读取 PDF'],
-  ['detect', '判断文字稿还是扫描件'],
-  ['text', '提取文字'],
   ['render', '渲染页面图像'],
-  ['ocr', 'OCR 识别'],
-  ['structure', '逐页抽取交易'],
+  ['vision', '视觉读图'],
+  ['structure', '结构化输出'],
   ['balance', '余额复核'],
   ['save', '写入交易'],
 ] as const;
@@ -421,7 +548,7 @@ class ParseProgress {
   }
 }
 
-/** 解析单个文件（文字层通道）。调用方负责状态置 parsing 与并发控制 */
+/** 解析单个文件：整本先转图片，再逐页视觉读图并结构化。 */
 export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> {
   const file = db.prepare('SELECT * FROM files WHERE id = ?').get(fileId) as Record<string, unknown> | undefined;
   if (!file) throw new Error('文件登记不存在（任务被删除？）');
@@ -432,73 +559,54 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
   const absPath = path.resolve(task.folder_path, String(file.rel_path));
   const prog = new ParseProgress(fileId);
 
-  // 1) 读取 + 文字层。读的过程中按页回报，避免长时间没有任何动静。
-  let pages: PageLines[];
+  let images: PageImage[];
   prog.set('read', 'run', '打开文件');
   try {
-    pages = await extractTextLines(absPath, (done, total) => {
-      prog.set('read', 'run', total > 0 ? `已读取 ${done}/${total} 页` : '打开文件');
+    images = await renderPdfPages(absPath, (done, total) => {
+      if (done === 0 && total > 0) prog.set('read', 'done', `${total} 页`);
+      prog.set('render', 'run', total > 0 ? `已渲染 ${done}/${total} 页` : '打开文件');
     });
   } catch (e) {
-    const msg = `PDF 读取失败：${(e as Error).message}`;
-    prog.set('read', 'fail', msg);
+    const msg = `页面渲染失败：${(e as Error).message}`;
+    prog.set('render', 'fail', msg);
     return finishError(fileId, msg);
   }
-  if (pages.length === 0) {
+  if (images.length === 0) {
     prog.set('read', 'fail', 'PDF 无页面');
     return finishError(fileId, 'PDF 无页面');
   }
-  prog.set('read', 'done', `${pages.length} 页`);
+  prog.set('read', 'done', `${images.length} 页`);
+  prog.set('render', 'done', `${images.length} 页`);
 
-  const totalChars = pages.reduce((s, p) => s + p.chars, 0);
-  prog.set('detect', 'run', '查看有没有可选中的文字');
-  if (totalChars < 20) {
-    prog.set('detect', 'done', '几乎没有文字，按扫描件处理');
-    prog.set('text', 'skip', '没有可提取的文字');
-    prog.set('render', 'skip', '扫描件渲染还没接入');
-    prog.set('ocr', 'fail', 'OCR 通道还没接入，本次停在这里');
-    return finishError(fileId, '文字层缺失（疑似扫描件），OCR 通道接入后会从这里继续');
-  }
-  prog.set('detect', 'done', '文字稿，直接读文字层');
-  prog.set('text', 'done', `${pages.length} 页，约 ${totalChars.toLocaleString('zh-CN')} 字`);
-  prog.set('render', 'skip', '文字稿不需要渲染');
-  prog.set('ocr', 'skip', '文字稿不需要 OCR');
-
-  // 2) LLM 结构化（≤3 页/批，上批末 3 行衔接）
   const s = getSettings();
   const all: NormTx[] = [];
   let meta: Partial<StructuredBatch> = {};
   let prevTail: string | undefined;
   try {
-    for (let i = 0; i < pages.length; i += BATCH_PAGES) {
-      const end = Math.min(pages.length, i + BATCH_PAGES);
-      prog.set('structure', 'run', `第 ${i + 1}–${end} / ${pages.length} 页，已抽出 ${all.length} 笔`);
-      const blockPages = pages.slice(i, i + BATCH_PAGES).map((pl, k) => ({ p: i + k + 1, lines: pl.lines }));
-      const r = await structureBatch(s, String(file.rel_path), blockPages, pages.length, prevTail);
+    for (let i = 0; i < images.length; i++) {
+      const image = images[i];
+      prog.set('vision', 'run', `第 ${image.page}/${images.length} 页`);
+      prog.set('structure', 'run', `正在整理第 ${image.page} 页，已抽出 ${all.length} 笔`);
+      const r = await structurePageImage(s, String(file.rel_path), image, images.length, prevTail);
       if (r.bank) meta.bank = r.bank;
       if (r.accountNo) meta.accountNo = r.accountNo;
       if (r.accountName) meta.accountName = r.accountName;
       if (r.periodStart) meta.periodStart = r.periodStart;
       if (r.periodEnd) meta.periodEnd = r.periodEnd;
       all.push(...r.txs);
-      const last3 = r.txs.slice(-3);
-      prevTail = last3.length
-        ? last3
-            .map((t) => {
-              const pl = pages[t.page - 1];
-              const raw = pl && t.lineNo >= 1 && t.lineNo <= pl.lines.length ? pl.lines[t.lineNo - 1] : undefined;
-              return raw ? `[p${t.page} 行${t.lineNo}] ${raw.trim()}` : null;
-            })
-            .filter(Boolean)
-            .join('\n')
-        : undefined;
-      prog.set('structure', 'run', `第 ${i + 1}–${end} / ${pages.length} 页完成，已抽出 ${all.length} 笔`);
+      const last2 = r.txs.slice(-2);
+      prevTail = last2.length
+        ? last2.map((t) => t.raw || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n')
+        : prevTail;
+      prog.set('structure', 'run', `第 ${image.page} 页 ${r.txs.length} 笔，累计 ${all.length} 笔`);
     }
   } catch (e) {
     const msg = (e as Error).message;
+    prog.set('vision', 'fail', msg);
     prog.set('structure', 'fail', msg);
     return finishError(fileId, msg);
   }
+  prog.set('vision', 'done', `${images.length} 页`);
   prog.set('structure', 'done', `共 ${all.length} 笔`);
 
   // 3) 余额连续性（M3 §5.5）：只追加复核提示，不改金额/方向/余额/日期。
@@ -520,9 +628,7 @@ export async function parseFileTextLayer(fileId: number): Promise<ParseOutcome> 
     let reviewCount = 0;
     const inOrder = [...all].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
     for (const t of inOrder) {
-      const pl = pages[t.page - 1];
-      const raw = pl && t.lineNo >= 1 && t.lineNo <= pl.lines.length ? pl.lines[t.lineNo - 1]?.trim() : undefined;
-      if (!raw && !t.review) t.review = '行号越界（对不上原始行）';
+      const raw = t.raw?.trim();
       const status = t.review ? 'needs_review' : 'ok';
       if (t.review) reviewCount++;
       ins.run(
