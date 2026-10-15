@@ -193,8 +193,14 @@ function FlowTimeline({ result }: { result: FlowResult }) {
     if (dates.length === 0) return [];
     return eachDay(dates[0], dates[dates.length - 1]);
   }, [moves, result.balances]);
-  const [index, setIndex] = useState(0);
+  const tradeAt = useMemo(() => {
+    const has = new Set(moves.map((m) => m.date));
+    return days.map((d, i) => (has.has(d) ? i : -1)).filter((i) => i >= 0);
+  }, [moves, days]);
+  const [index, setIndex] = useState(() => tradeAt[0] ?? 0);
   const day = days[Math.min(index, Math.max(days.length - 1, 0))] ?? '';
+  const prevTrade = [...tradeAt].reverse().find((i) => i < index) ?? -1;
+  const nextTrade = tradeAt.find((i) => i > index) ?? -1;
   const accounts = useMemo(() => {
     const weight = new Map<string, number>();
     for (const m of moves) weight.set(m.accountId, (weight.get(m.accountId) ?? 0) + m.amount);
@@ -214,7 +220,7 @@ function FlowTimeline({ result }: { result: FlowResult }) {
         <span><i style={{ background: COLOR.treasury }} />现金管理</span>
       </div>
       <div className="tl-bar">
-        <button type="button" className="secondary-button" onClick={() => pick(index - 1)} disabled={index <= 0}>前一天</button>
+        <button type="button" className="secondary-button" onClick={() => pick(prevTrade)} disabled={prevTrade < 0}>前一天</button>
         <div className="tl-bar-main">
           <div className="tl-date">{day || '—'}</div>
           <input
@@ -232,7 +238,7 @@ function FlowTimeline({ result }: { result: FlowResult }) {
             <span>{days[days.length - 1]}</span>
           </div>
         </div>
-        <button type="button" className="secondary-button" onClick={() => pick(index + 1)} disabled={index >= days.length - 1}>后一天</button>
+        <button type="button" className="secondary-button" onClick={() => pick(nextTrade)} disabled={nextTrade < 0}>后一天</button>
       </div>
       <div className="tl-rows">
         {accounts.map((acct) => {
