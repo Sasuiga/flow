@@ -1,11 +1,16 @@
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useState } from 'react';
-import { CreateEntityInput, FundUse, ProjectView, TaskView } from '@flow/shared';
+import { useCallback, useEffect, useState } from 'react';
+import { CreateEntityInput, FundUse, ProjectAccount, ProjectView, TaskView } from '@flow/shared';
 import { api, ProjectDetail as ProjectDetailData } from '../api';
 import { CreateDialog } from '../components/CreateDialog';
 import { ListRow, ListRowHeader } from '../components/ListRow';
+import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
 import { formatDate } from '../lib/format';
+
+function accountKey(a: Pick<ProjectAccount, 'bank' | 'accountNo'>) {
+  return `${a.bank}\t${a.accountNo}`;
+}
 
 type ProjectPageProps = {
   projectId: number;
@@ -21,8 +26,13 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | undefined>();
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
+  const [useOpen, setUseOpen] = useState(false);
   const [useName, setUseName] = useState('');
   const [useBusy, setUseBusy] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<FundUse | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [attachId, setAttachId] = useState<number | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -81,14 +91,29 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
-  async function addUse(e: FormEvent) {
-    e.preventDefault();
+  async function addUse() {
     const name = useName.trim();
     if (!name || !project) return;
     setUseBusy(true);
     try {
       await api.createFundUse(project.id, name);
       setUseName('');
+      setUseOpen(false);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUseBusy(false);
+    }
+  }
+
+  async function saveRename() {
+    const name = renameName.trim();
+    if (!name || !project || !renameTarget) return;
+    setUseBusy(true);
+    try {
+      await api.renameFundUse(project.id, renameTarget.id, name);
+      setRenameTarget(null);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -122,6 +147,28 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
+  async function hangPicked(useId: number, accounts: ProjectAccount[]) {
+    if (!project || picked.length === 0) return;
+    setUseBusy(true);
+    try {
+      for (const key of picked) {
+        const acc = accounts.find((a) => accountKey(a) === key);
+        if (!acc) continue;
+        await api.assignAccount(project.id, { bank: acc.bank, accountNo: acc.accountNo, fundUseId: useId });
+      }
+      setPicked([]);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUseBusy(false);
+    }
+  }
+
+  const attachUse = attachId != null ? detail?.fundUses.find((u) => u.id === attachId) : undefined;
+  const attached = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId === attachUse.id) : [];
+  const freeAccounts = attachUse ? (detail?.accounts ?? []).filter((a) => a.fundUseId == null) : [];
+
   return (
     <div className="page">
       <nav className="breadcrumb">
@@ -139,64 +186,73 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
 
-      {project && detail ? (
-        <section className="fund-panel">
-          <div className="page-header" style={{ marginBottom: 10 }}>
-            <h2 style={{ fontSize: 16, margin: 0 }}>募投项目</h2>
-            <form className="fund-add" onSubmit={(e) => void addUse(e)}>
-              <input
-                className="input"
-                value={useName}
-                placeholder="名称"
-                onChange={(e) => setUseName(e.target.value)}
-              />
-              <button className="secondary-button" type="submit" disabled={useBusy || !useName.trim()}>
-                添加
-              </button>
-            </form>
-          </div>
-          {detail.fundUses.length > 0 ? (
-            <div className="fund-use-list">
-              {detail.fundUses.map((u) => (
-                <UseNameRow key={u.id} use={u} projectId={project.id} onDone={() => void load()} onError={setError} onDelete={() => void removeUse(u)} />
-              ))}
+      {detail ? (
+        <section className="page-section">
+          <div className="page-header" style={{ marginBottom: 12 }}>
+            <div>
+              <h1 style={{ fontSize: 18, marginBottom: 2 }}>募投项目</h1>
             </div>
-          ) : null}
-          {detail.accounts.length > 0 ? (
-            <table className="fund-accounts">
-              <thead>
-                <tr>
-                  <th>银行</th>
-                  <th>账号</th>
-                  <th>户名</th>
-                  <th>募投项目</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.accounts.map((a) => (
-                  <tr key={`${a.bank}\t${a.accountNo}`}>
-                    <td>{a.bank || '—'}</td>
-                    <td className="fund-account-no">{a.accountNo}</td>
-                    <td>{a.accountName || '—'}</td>
-                    <td>
-                      <select
-                        className="input"
-                        value={a.fundUseId ?? ''}
-                        onChange={(e) => void assignAccount(a.bank, a.accountNo, e.target.value ? Number(e.target.value) : null)}
-                      >
-                        <option value="">未归集</option>
-                        {detail.fundUses.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : null}
+            <div className="page-header-actions">
+              <button className="primary-button" disabled={!project} onClick={() => { setUseName(''); setUseOpen(true); }}>
+                <Plus size={15} /> 新建募投项目
+              </button>
+            </div>
+          </div>
+
+          {detail.fundUses.length === 0 ? (
+            <div className="flow-empty">
+              <h3>还没有募投项目</h3>
+              <p>先录入募投项目，再把对应的专户挂上去。</p>
+              <div className="flow-empty-actions">
+                <button className="primary-button" onClick={() => { setUseName(''); setUseOpen(true); }}>
+                  <Plus size={15} /> 新建募投项目
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <ListRowHeader
+                withMenu
+                cols={[
+                  { label: '名称', cls: 'list-row-col-title' },
+                  { label: '账户', cls: 'list-row-col-count' },
+                ]}
+              />
+              {detail.fundUses.map((u) => {
+                const n = detail.accounts.filter((a) => a.fundUseId === u.id).length;
+                return (
+                  <ListRow
+                    key={u.id}
+                    title={u.name}
+                    onClick={() => {
+                      setPicked([]);
+                      setAttachId(u.id);
+                    }}
+                    menuItems={[
+                      {
+                        label: '挂账户',
+                        onClick: () => {
+                          setPicked([]);
+                          setAttachId(u.id);
+                        },
+                      },
+                      {
+                        label: '重命名',
+                        onClick: () => {
+                          setRenameName(u.name);
+                          setRenameTarget(u);
+                        },
+                      },
+                      { label: '删除', danger: true, onClick: () => void removeUse(u) },
+                    ]}
+                  >
+                    <span className="list-row-col-title">{u.name}</span>
+                    <span className={`list-row-col-count${n === 0 ? ' empty' : ''}`}>{n}</span>
+                  </ListRow>
+                );
+              })}
+            </>
+          )}
         </section>
       ) : null}
 
@@ -273,6 +329,134 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         ) : null
       ) : null}
 
+      {useOpen ? (
+        <Modal title="新建募投项目" onClose={() => !useBusy && setUseOpen(false)} disableDismiss={useBusy} width={420}>
+          <div className="field">
+            <span className="field-label">名称</span>
+            <input
+              className="input"
+              value={useName}
+              placeholder="例如 年产10万吨高端铝板"
+              autoFocus
+              onChange={(e) => setUseName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addUse();
+              }}
+            />
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button" disabled={useBusy} onClick={() => setUseOpen(false)}>
+              取消
+            </button>
+            <button className="primary-button" disabled={useBusy || !useName.trim()} onClick={() => void addUse()}>
+              创建
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {renameTarget ? (
+        <Modal title="重命名" onClose={() => !useBusy && setRenameTarget(null)} disableDismiss={useBusy} width={420}>
+          <div className="field">
+            <span className="field-label">名称</span>
+            <input
+              className="input"
+              value={renameName}
+              autoFocus
+              onChange={(e) => setRenameName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveRename();
+              }}
+            />
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button" disabled={useBusy} onClick={() => setRenameTarget(null)}>
+              取消
+            </button>
+            <button
+              className="primary-button"
+              disabled={useBusy || !renameName.trim() || renameName.trim() === renameTarget.name}
+              onClick={() => void saveRename()}
+            >
+              保存
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {attachUse ? (
+        <Modal title={attachUse.name} onClose={() => !useBusy && setAttachId(null)} disableDismiss={useBusy} width={520}>
+          <div className="pick-label">已挂账户</div>
+          {attached.length === 0 ? (
+            <p className="pick-empty">{detail && detail.accounts.length === 0 ? '解析出账户后可以挂到这里' : '还没有账户'}</p>
+          ) : (
+            <div className="pick-list">
+              {attached.map((a) => (
+                <div className="pick-row" key={accountKey(a)}>
+                  <span className="pick-row-main">
+                    <span className="pick-row-name">
+                      {a.bank || '—'}
+                      {a.accountName ? ` · ${a.accountName}` : ''}
+                    </span>
+                    <span className="pick-row-no">{a.accountNo}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={useBusy}
+                    onClick={() => void assignAccount(a.bank, a.accountNo, null)}
+                  >
+                    移出
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {freeAccounts.length > 0 ? (
+            <>
+              <div className="pick-label">未归集账户</div>
+              <div className="pick-list">
+                {freeAccounts.map((a) => {
+                  const key = accountKey(a);
+                  const on = picked.includes(key);
+                  return (
+                    <label key={key} className={`pick-row pick-check${on ? ' active' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => setPicked((prev) => (on ? prev.filter((k) => k !== key) : [...prev, key]))}
+                      />
+                      <span className="pick-row-main">
+                        <span className="pick-row-name">
+                          {a.bank || '—'}
+                          {a.accountName ? ` · ${a.accountName}` : ''}
+                        </span>
+                        <span className="pick-row-no">{a.accountNo}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="modal-actions">
+                <button className="secondary-button" disabled={useBusy} onClick={() => setAttachId(null)}>
+                  关闭
+                </button>
+                <button className="primary-button" disabled={useBusy || picked.length === 0} onClick={() => void hangPicked(attachUse.id, freeAccounts)}>
+                  挂上
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="modal-actions">
+              <button className="secondary-button" disabled={useBusy} onClick={() => setAttachId(null)}>
+                关闭
+              </button>
+            </div>
+          )}
+        </Modal>
+      ) : null}
+
       {createOpen && project ? (
         <CreateDialog
           title="新建报告期任务"
@@ -289,48 +473,3 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   );
 }
 
-function UseNameRow({
-  use,
-  projectId,
-  onDone,
-  onError,
-  onDelete,
-}: {
-  use: FundUse;
-  projectId: number;
-  onDone: () => void;
-  onError: (msg: string) => void;
-  onDelete: () => void;
-}) {
-  const [name, setName] = useState(use.name);
-  useEffect(() => setName(use.name), [use.name]);
-  return (
-    <div className="fund-use-item">
-      <input
-        className="input fund-use-name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onBlur={() => {
-          const next = name.trim();
-          if (!next || next === use.name) {
-            setName(use.name);
-            return;
-          }
-          void api
-            .renameFundUse(projectId, use.id, next)
-            .then(onDone)
-            .catch((err) => {
-              setName(use.name);
-              onError((err as Error).message);
-            });
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-        }}
-      />
-      <button type="button" className="fund-use-del" onClick={onDelete} aria-label="删除">
-        ×
-      </button>
-    </div>
-  );
-}
