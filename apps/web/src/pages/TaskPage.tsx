@@ -301,38 +301,39 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
 function AccountCoverage({ accounts, files }: { accounts: ProjectAccount[]; files: BankFile[] }) {
   const ready = (a: ProjectAccount) =>
     files.some((f) => f.accountNo && normAccountNo(f.accountNo) === normAccountNo(a.accountNo));
-  const missing = accounts.filter((a) => !ready(a)).length;
+  const missing = accounts.filter((a) => !ready(a));
   return (
     <section className="page-section">
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
-          <h1 style={{ fontSize: 18, marginBottom: 2 }}>募资专户</h1>
+          <h1 style={{ fontSize: 18, marginBottom: 2 }}>流水提供情况</h1>
         </div>
         <div className="page-header-actions">
-          {missing === 0 ? <span className="chip chip-success">已齐</span> : <span className="chip chip-warning">缺 {missing} 个</span>}
+          {missing.length === 0 ? (
+            <span className="chip chip-success">已齐</span>
+          ) : (
+            <span className="chip chip-warning">缺 {missing.length} 个</span>
+          )}
         </div>
       </div>
-      <ListRowHeader
-        cols={[
-          { label: '账户主体', cls: 'list-row-col-title' },
-          { label: '开户行', cls: 'list-row-col-meta' },
-          { label: '账号', cls: 'list-row-col-account' },
-          { label: '流水', cls: 'list-row-col-status' },
-        ]}
-      />
-      {accounts.map((a) => {
-        const ok = ready(a);
-        return (
-          <ListRow key={a.id} title={a.holder}>
-            <span className="list-row-col-title">{a.holder}</span>
-            <span className="list-row-col-meta">{a.bank}</span>
-            <span className="list-row-col-account">{a.accountNo}</span>
-            <span className="list-row-col-status">
-              <span className={`chip ${ok ? 'chip-success' : 'chip-warning'}`}>{ok ? '已提供' : '未提供'}</span>
-            </span>
-          </ListRow>
-        );
-      })}
+      {missing.length > 0 ? (
+        <div className="coverage-table">
+          <ListRowHeader
+            cols={[
+              { label: '账户主体', cls: 'list-row-col-title' },
+              { label: '开户行', cls: 'list-row-col-meta' },
+              { label: '账号', cls: 'list-row-col-account' },
+            ]}
+          />
+          {missing.map((a) => (
+            <ListRow key={a.id} title={a.holder}>
+              <span className="list-row-col-title" title={a.holder}>{a.holder}</span>
+              <span className="list-row-col-meta" title={a.bank}>{a.bank}</span>
+              <span className="list-row-col-account" title={a.accountNo}>{a.accountNo}</span>
+            </ListRow>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -1541,6 +1541,26 @@ select.input {
   outline-offset: 1px;
 }
 
+.coverage-table .list-row-table-header,
+.coverage-table .list-row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 120px minmax(180px, 1fr);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.coverage-table .list-row-table-header {
+  padding: 0 12px;
+}
+
+.coverage-table .list-row-main > span {
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .review-form .input {
   width: 140px;
 }
