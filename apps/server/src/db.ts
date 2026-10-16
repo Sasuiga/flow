@@ -128,6 +128,20 @@ CREATE TABLE IF NOT EXISTS flow_analyses (
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- 交易页标记（源头）。关注页的记录和判定写在 tx_watch_log，不改 marked。
+CREATE TABLE IF NOT EXISTS tx_watch (
+  transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+  marked INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tx_watch_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('mark','unmark','note','verdict')),
+  body TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watch_log_tx ON tx_watch_log(transaction_id, id);
 `);
 
 /* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */

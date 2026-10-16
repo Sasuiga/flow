@@ -1,12 +1,13 @@
-import { FilterX, Inbox } from 'lucide-react';
+import { Bookmark, FilterX, Inbox } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Table } from 'antd';
 import { TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { formatMoney } from '../lib/format';
 type TxPageProps = {
-  /** 导航上下文带入的过滤（点某个流水文件时带上它的银行和账户） */
-  initialTaskId?: number;
+  /** 右上角当前任务。交易页只看这一份资料 */
+  taskId?: number;
+  /** 从某个流水文件进来时带上它的银行和账户 */
   initialBank?: string;
   initialAccountNo?: string;
 };
@@ -22,14 +23,14 @@ function fmtAmount(n?: number): string {
 }
 
 /**
- * 交易浏览器（M2）：跨任务全量交易表
- * 过滤（任务/银行/账户/日期/对手方/状态/分类）+ 分页 + 行展开看原始文本。
+ * 交易浏览器：只看当前任务。
+ * 银行和募投列出该任务的全部；账户随银行、募投收窄。
  */
-export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo }: TxPageProps) {
+export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPageProps) {
   const [options, setOptions] = useState<TxOptions | null>(null);
   const [catSet, setCatSet] = useState<string[]>([]);
   const [query, setQuery] = useState<TxQuery>({
-    taskId: initialTaskId,
+    taskId,
     bank: initialBank,
     accountNo: initialAccountNo,
     sort: 'stmt',
@@ -39,9 +40,18 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
   const [data, setData] = useState<TxPageResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [notice, setNotice] = useState<string | undefined>();
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkCat, setBulkCat] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const seq = useRef(0);
 
   useEffect(() => {
+    if (query.taskId == null) {
+      setOptions(null);
+      return;
+    }
     let cancelled = false;
     const facet: TxQuery = {
       taskId: query.taskId,
@@ -64,11 +74,6 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
         setQuery((q) => {
           const next = { ...q };
           let changed = false;
-          if (q.taskId && !opts.tasks.some((t) => t.id === q.taskId)) {
-            next.taskId = undefined;
-            next.fileId = undefined;
-            changed = true;
-          }
           if (q.bank && !opts.banks.includes(q.bank)) {
             next.bank = undefined;
             changed = true;
@@ -118,19 +123,25 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
       .catch(() => undefined);
   }, []);
 
-  // 从某个流水文件进来时，带上它的银行和账户；之后用户改筛选不再被盖回去。
+  // 换任务，或从某个流水文件进来时，带上它的银行和账户。
   useEffect(() => {
+    setSelectedIds([]);
     setQuery((q) => ({
       ...q,
-      taskId: initialTaskId,
+      taskId,
       fileId: undefined,
       bank: initialBank,
       accountNo: initialAccountNo,
       page: 1,
     }));
-  }, [initialTaskId, initialBank, initialAccountNo]);
+  }, [taskId, initialBank, initialAccountNo]);
 
   useEffect(() => {
+    if (query.taskId == null) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     const my = ++seq.current;
     setLoading(true);
     api
@@ -147,9 +158,54 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
       .finally(() => {
         if (seq.current === my) setLoading(false);
       });
-  }, [query]);
+  }, [query, reloadKey]);
 
-  const patch = (p: Partial<TxQuery>) => setQuery((q) => ({ ...q, ...p, page: 1 }));
+  const patch = (p: Partial<TxQuery>) => {
+    setSelectedIds([]);
+    setNotice(undefined);
+    setQuery((q) => ({ ...q, ...p, page: 1 }));
+  };
+
+  /** 当前页勾选并入已选，其它页的勾选保留 */
+  function onSelectChange(keys: Array<string | number>) {
+    const pageIds = new Set((data?.rows ?? []).map((r) => r.id));
+    const picked = keys.map(Number).filter((id) => pageIds.has(id));
+    setSelectedIds((prev) => [...prev.filter((id) => !pageIds.has(id)), ...picked]);
+  }
+
+  /** 多选改判：写交易级 category（src=manual），之后 LLM 分类不会覆盖 */
+  async function applyBulk() {
+    if (selectedIds.length === 0 || !bulkCat || bulkBusy) return;
+    const category = bulkCat === '__clear__' ? null : bulkCat;
+    setBulkBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const res = await api.bulkCategory(selectedIds, category);
+      setNotice(`已把 ${res.updated} 笔改判为${category ?? '未分类'}`);
+      setSelectedIds([]);
+      setBulkCat('');
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+      setNotice(undefined);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /** 只改关注标记。记录和判定在关注页追加，这里不碰 */
+  async function toggleWatch(r: TxRow) {
+    const next = !r.watched;
+    try {
+      const res = await api.setWatch(r.id, next);
+      setData((d) =>
+        d ? { ...d, rows: d.rows.map((x) => (x.id === r.id ? { ...x, watched: res.watched } : x)) } : d,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   /** M4 改判：写交易级 category（src=manual），下一批 LLM 分类会自动带上这个口径 */
   async function recategorize(r: TxRow, category: string | null) {
@@ -174,8 +230,8 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
   }
 
   const activeFilterCount = [
-    query.taskId, query.fileId, query.bank, query.accountNo, query.fundUse, query.from, query.to,
-    query.counterparty, query.status, query.category, query.q,
+    query.bank, query.accountNo, query.fundUse, query.from, query.to,
+    query.counterparty, query.status, query.category,
   ].filter((v) => v !== undefined && v !== '').length;
 
   return (
@@ -187,132 +243,134 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
         </div>
       </div>
 
-      {options ? (
-        <div className="filter-bar">
-          <select
-            className="input filter-control"
-            value={query.taskId ?? ''}
-            onChange={(e) =>
-              patch({
-                taskId: e.target.value ? Number(e.target.value) : undefined,
-                fileId: undefined,
-              })
-            }
-          >
-            <option value="">全部任务</option>
-            {options.tasks.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.clientName} / {t.projectName} / {t.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input filter-control"
-            value={query.fundUse ?? ''}
-            onChange={(e) => {
-              const fundUse = e.target.value || undefined;
-              patch(fundUse ? { fundUse, accountNo: undefined } : { fundUse: undefined });
-            }}
-          >
-            <option value="">全部募投项目</option>
-            {options.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
-            {options.fundUses.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input filter-control"
-            value={query.bank ?? ''}
-            onChange={(e) => {
-              const bank = e.target.value || undefined;
-              patch(bank ? { bank, accountNo: undefined } : { bank: undefined });
-            }}
-          >
-            <option value="">全部银行</option>
-            {options.banks.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
-          <select
-            className="input filter-control"
-            value={query.accountNo ?? ''}
-            onChange={(e) => patch({ accountNo: e.target.value || undefined })}
-          >
-            <option value="">全部账户</option>
-            {options.accounts.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-          <input
-            type="date"
-            className="input filter-control"
-            value={query.from ?? ''}
-            onChange={(e) => patch({ from: e.target.value || undefined })}
-            title="起始日期"
-          />
-          <span className="filter-sep">→</span>
-          <input
-            type="date"
-            className="input filter-control"
-            value={query.to ?? ''}
-            onChange={(e) => patch({ to: e.target.value || undefined })}
-            title="结束日期"
-          />
-          <input
-            className="input filter-control"
-            placeholder="对手方"
-            value={query.counterparty ?? ''}
-            onChange={(e) => patch({ counterparty: e.target.value || undefined })}
-          />
-          <select
-            className="input filter-control"
-            value={query.status ?? ''}
-            onChange={(e) => patch({ status: (e.target.value || undefined) as TxQuery['status'] })}
-          >
-            <option value="">全部状态</option>
-            <option value="ok">正常</option>
-            <option value="needs_review">待复核</option>
-            <option value="fixed">已修正</option>
-          </select>
-          <select
-            className="input filter-control"
-            value={query.category ?? ''}
-            onChange={(e) => patch({ category: e.target.value || undefined })}
-          >
-            <option value="">全部分类</option>
-            <option value="__none__">未分类</option>
-            {options.categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-          {activeFilterCount > 0 ? (
-            <button
-              className="filter-reset"
-              onClick={() =>
-                setQuery({
-                  sort: query.sort,
-                  page: 1,
-                  pageSize: 50,
-                })
-              }
+      {taskId == null ? (
+        <div className="flow-empty">
+          <h3>先在右上角打开一个任务</h3>
+          <p>交易只显示当前任务的流水。</p>
+        </div>
+      ) : options ? (
+        <div className="tx-filters">
+          <div className="tx-filter-row primary">
+            <select
+              className="input filter-control"
+              title={query.bank || '全部银行'}
+              value={query.bank ?? ''}
+              onChange={(e) => {
+                const bank = e.target.value || undefined;
+                patch(bank ? { bank, accountNo: undefined } : { bank: undefined });
+              }}
             >
-              <FilterX size={13} /> 清除（{activeFilterCount}）
-            </button>
-          ) : null}
+              <option value="">全部银行</option>
+              {options.banks.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input filter-control"
+              title={options.fundUses.find((u) => String(u.id) === query.fundUse)?.name || '全部募投'}
+              value={query.fundUse ?? ''}
+              onChange={(e) => {
+                const fundUse = e.target.value || undefined;
+                patch(fundUse ? { fundUse, accountNo: undefined } : { fundUse: undefined });
+              }}
+            >
+              <option value="">全部募投</option>
+              {options.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
+              {options.fundUses.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input filter-control"
+              title={query.accountNo || '全部账户'}
+              value={query.accountNo ?? ''}
+              onChange={(e) => patch({ accountNo: e.target.value || undefined })}
+            >
+              <option value="">全部账户</option>
+              {options.accounts.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input filter-control"
+              value={query.status ?? ''}
+              onChange={(e) => patch({ status: (e.target.value || undefined) as TxQuery['status'] })}
+            >
+              <option value="">全部状态</option>
+              <option value="ok">正常</option>
+              <option value="needs_review">待复核</option>
+              <option value="fixed">已修正</option>
+            </select>
+            <select
+              className="input filter-control"
+              title={query.category || '全部分类'}
+              value={query.category ?? ''}
+              onChange={(e) => patch({ category: e.target.value || undefined })}
+            >
+              <option value="">全部分类</option>
+              <option value="__none__">未分类</option>
+              {options.categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="tx-filter-row secondary">
+            <input
+              type="date"
+              className="input filter-control"
+              value={query.from ?? ''}
+              onChange={(e) => patch({ from: e.target.value || undefined })}
+              title="起始日期"
+            />
+            <span className="filter-sep">至</span>
+            <input
+              type="date"
+              className="input filter-control"
+              value={query.to ?? ''}
+              onChange={(e) => patch({ to: e.target.value || undefined })}
+              title="结束日期"
+            />
+            <input
+              className="input filter-control"
+              placeholder="对手方"
+              value={query.counterparty ?? ''}
+              onChange={(e) => patch({ counterparty: e.target.value || undefined })}
+            />
+            {activeFilterCount > 0 ? (
+              <button
+                className="filter-reset"
+                onClick={() => {
+                  setSelectedIds([]);
+                  setNotice(undefined);
+                  setQuery({
+                    taskId: query.taskId,
+                    sort: query.sort,
+                    page: 1,
+                    pageSize: 50,
+                  });
+                }}
+              >
+                <FilterX size={13} /> 清除（{activeFilterCount}）
+              </button>
+            ) : (
+              <span />
+            )}
+          </div>
         </div>
       ) : (
         <div className="flow-notice">加载过滤器选项…</div>
       )}
 
       {error ? <div className="flow-error">{error}</div> : null}
+      {notice ? <div className="flow-notice">{notice}</div> : null}
 
       {data ? (
         <div className="tx-summary">
@@ -341,6 +399,11 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
           rowKey="id"
           loading={loading}
           dataSource={data?.rows ?? []}
+          rowSelection={{
+            selectedRowKeys: selectedIds,
+            onChange: onSelectChange,
+            columnWidth: 36,
+          }}
           pagination={{
             current: query.page ?? 1,
             pageSize: query.pageSize ?? 50,
@@ -354,6 +417,21 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
             expandedRowRender: (r: TxRow) => <TxDetailRow r={r} />,
           }}
           columns={[
+            {
+              title: '关注',
+              width: 52,
+              align: 'center',
+              render: (_: unknown, r: TxRow) => (
+                <button
+                  type="button"
+                  className={`tx-watch${r.watched ? ' on' : ''}`}
+                  title={r.watched ? '取消关注。已记下的内容和判定会留着' : '标记关注，之后到关注页处理'}
+                  onClick={() => void toggleWatch(r)}
+                >
+                  <Bookmark size={14} />
+                </button>
+              ),
+            },
             {
               title: '日期',
               dataIndex: 'date',
@@ -469,6 +547,40 @@ export function TransactionsPage({ initialTaskId, initialBank, initialAccountNo 
           ] as never}
         />
       </div>
+
+      {selectedIds.length > 0 ? (
+        <div className="tx-bulk">
+          <span className="tx-bulk-count">已选 {selectedIds.length} 笔</span>
+          <span className="tx-bulk-hint">可跨页勾选。改判后记为人工，自动分类不会覆盖。</span>
+          <select
+            className="input filter-control tx-bulk-select"
+            value={bulkCat}
+            disabled={bulkBusy}
+            onChange={(e) => setBulkCat(e.target.value)}
+          >
+            <option value="">选择分类</option>
+            <option value="__clear__">未分类</option>
+            {catSet.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <button className="primary-button" disabled={!bulkCat || bulkBusy} onClick={() => void applyBulk()}>
+            {bulkBusy ? '改判中…' : '改判'}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={bulkBusy}
+            onClick={() => {
+              setSelectedIds([]);
+              setBulkCat('');
+            }}
+          >
+            取消
+          </button>
+        </div>
+      ) : null}
       </div>
     </div>
   );

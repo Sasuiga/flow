@@ -12,7 +12,7 @@ import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from '.
 import { bulkCategory, setTxCategory } from './categorize.js';
 import { TaskListItem, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
-function toTxRow(r: Record<string, unknown>): TxRow {
+export function toTxRow(r: Record<string, unknown>): TxRow {
   return {
     id: Number(r.id),
     fileId: Number(r.file_id),
@@ -41,6 +41,7 @@ function toTxRow(r: Record<string, unknown>): TxRow {
     reviewNote: (r.review_note as string | null) ?? undefined,
     rawText: (r.raw_text as string | null) ?? undefined,
     status: r.status as TxRow['status'],
+    watched: Number(r.watched) === 1,
   };
 }
 
@@ -54,12 +55,14 @@ LEFT JOIN fund_use_accounts fua
   ON fua.project_id = tk.project_id
  AND fua.account_key != ''
  AND fua.account_key = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(f.account_no, ''), ' ', ''), char(9), ''), '-', ''), '　', ''))
-LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id`;
+LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
+LEFT JOIN tx_watch w ON w.transaction_id = t.id`;
 
-const BASE_SELECT = `
+export const BASE_SELECT = `
 SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
        t.counterparty, t.counterparty_account, t.channel, t.category, t.category_src,
        t.risk_flags, t.confidence, t.review_note, t.raw_text, t.status,
+       COALESCE(w.marked, 0) AS watched,
        f.rel_path AS file_name, f.bank, f.account_no,
        fu.id AS fund_use_id, fu.name AS fund_use_name,
        tk.name AS task_name, p.name AS project_name, c.name AS client_name
@@ -169,10 +172,15 @@ transactionsRouter.get('/', (req, res) => {
   res.json(result);
 });
 
-/** 过滤器选项。每一项都按其余条件收窄：选了银行，账户只剩这家银行的账号。 */
+/**
+ * 过滤器选项。
+ * 银行、募投始终是当前任务的全部，不因已选账户收窄，方便直接换银行。
+ * 账户按所选银行和募投收窄。
+ */
 transactionsRouter.get('/options', (req, res) => {
   const q = req.query as unknown as Record<string, string | undefined>;
   const from = TX_FROM;
+  const scope = { taskId: q.taskId, fileId: q.fileId };
 
   const taskWhere = buildWhere(q, ['taskId']);
   const taskRows = db
@@ -191,7 +199,7 @@ transactionsRouter.get('/options', (req, res) => {
     txCount: Number(t.tx_count),
   }));
 
-  const bankWhere = buildWhere(q, ['bank']);
+  const bankWhere = buildWhere(scope);
   const banks = (
     db
       .prepare(
@@ -200,7 +208,7 @@ transactionsRouter.get('/options', (req, res) => {
       .all(...bankWhere.args) as { bank: string }[]
   ).map((r) => r.bank);
 
-  const accountWhere = buildWhere(q, ['accountNo']);
+  const accountWhere = buildWhere({ ...scope, bank: q.bank, fundUse: q.fundUse });
   const accounts = (
     db
       .prepare(
@@ -218,7 +226,7 @@ transactionsRouter.get('/options', (req, res) => {
       .all(...categoryWhere.args) as { category: string }[]
   ).map((r) => r.category);
 
-  const useWhere = buildWhere(q, ['fundUse']);
+  const useWhere = buildWhere(scope);
   const fundUses = (
     db
       .prepare(

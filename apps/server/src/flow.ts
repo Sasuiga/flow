@@ -168,9 +168,19 @@ function loadContext(taskId: number): {
   return { taskName: head.task_name, clientName: head.client_name, accounts, rows };
 }
 
+/** 资金流向指纹。分类只改专题页，不放进指纹，避免改分类就整页重算。 */
 function signatureOf(accounts: Acct[], rows: Record<string, unknown>[]): string {
+  return hashSignature(accounts, rows, false);
+}
+
+/** 旧指纹把分类算进去了。对得上就改写成新指纹，已有结果不用重算。 */
+function signatureLegacy(accounts: Acct[], rows: Record<string, unknown>[]): string {
+  return hashSignature(accounts, rows, true);
+}
+
+function hashSignature(accounts: Acct[], rows: Record<string, unknown>[], withCategory: boolean): string {
   const body = [
-    'flow-v5',
+    withCategory ? 'flow-v5' : 'flow-v6',
     accounts
       .map((a) => a.key)
       .sort()
@@ -178,7 +188,8 @@ function signatureOf(accounts: Acct[], rows: Record<string, unknown>[]): string 
     ...rows.map((r) =>
       [
         r.id, r.date, r.amount, r.direction, r.counterparty, r.counterparty_account,
-        r.account_no, r.summary, r.category,
+        r.account_no, r.summary,
+        ...(withCategory ? [r.category] : []),
       ].join('|'),
     ),
   ].join('\n');
@@ -743,14 +754,19 @@ async function compute(taskId: number): Promise<FlowResponse> {
   return { status: 'ready', result };
 }
 
-function readCache(taskId: number, sig: string): FlowResponse | null {
+function readCache(taskId: number, sig: string, legacy: string): FlowResponse | null {
   const row = db.prepare('SELECT signature, payload FROM flow_analyses WHERE task_id = ?').get(taskId) as
     | { signature: string; payload: string }
     | undefined;
   if (!row) return null;
   try {
     const result = JSON.parse(row.payload) as FlowResult;
-    return { status: row.signature === sig ? 'ready' : 'stale', result };
+    if (row.signature === sig) return { status: 'ready', result };
+    if (row.signature === legacy) {
+      db.prepare('UPDATE flow_analyses SET signature = ? WHERE task_id = ?').run(sig, taskId);
+      return { status: 'ready', result };
+    }
+    return { status: 'stale', result };
   } catch {
     return null;
   }
@@ -760,7 +776,8 @@ export function getFlow(taskId: number): FlowResponse {
   const ctx = loadContext(taskId);
   if (!ctx) return { status: 'empty', message: '任务不存在' };
   const sig = signatureOf(ctx.accounts, ctx.rows);
-  return readCache(taskId, sig) ?? { status: 'missing' };
+  const legacy = signatureLegacy(ctx.accounts, ctx.rows);
+  return readCache(taskId, sig, legacy) ?? { status: 'missing' };
 }
 
 export function runFlow(taskId: number, force: boolean): Promise<FlowResponse> {
@@ -771,7 +788,7 @@ export function runFlow(taskId: number, force: boolean): Promise<FlowResponse> {
     if (!ctx) return { status: 'empty' as const, message: '任务不存在' };
     const sig = signatureOf(ctx.accounts, ctx.rows);
     if (!force) {
-      const cached = readCache(taskId, sig);
+      const cached = readCache(taskId, sig, signatureLegacy(ctx.accounts, ctx.rows));
       if (cached?.status === 'ready') return cached;
     }
     const out = await compute(taskId);

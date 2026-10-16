@@ -23,6 +23,8 @@ import {
   FundUse,
   ProjectAccount,
   FlowResponse,
+  CategoryFocus,
+  WatchItem,
 } from '@flow/shared';
 
 export interface LlmModelsResult {
@@ -121,6 +123,7 @@ export const api = {
   /* ---------- 任务 ---------- */
   getTask: (id: number) => j<TaskDetail>(`/api/tasks/${id}`),
   getFlow: (id: number) => j<FlowResponse>(`/api/tasks/${id}/flow`),
+  categoryFocus: (id: number) => j<{ views: CategoryFocus[] }>(`/api/tasks/${id}/category-focus`),
   runFlow: (id: number, force = false) =>
     j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force }) }),
   /** M4：任务级 LLM 批量分类（force=连 LLM 已分的也重分，人工改判不动） */
@@ -167,6 +170,14 @@ export const api = {
     },
   ) =>
     j<{ row: TxRow; reviewCount: number }>(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  setWatch: (id: number, marked: boolean) =>
+    j<{ watched: boolean }>(`/api/watch/${id}/mark`, { method: 'POST', body: JSON.stringify({ marked }) }),
+  watchList: (taskId?: number) =>
+    j<{ items: WatchItem[]; total: number }>(`/api/watch${taskId ? `?taskId=${taskId}` : ''}`),
+  watchNote: (id: number, text: string) =>
+    j<{ ok: boolean }>(`/api/watch/${id}/note`, { method: 'POST', body: JSON.stringify({ text }) }),
+  watchVerdict: (id: number, verdict: string) =>
+    j<{ ok: boolean; verdict: string }>(`/api/watch/${id}/verdict`, { method: 'POST', body: JSON.stringify({ verdict }) }),
   /** M4：分析页按线路批量改判（写交易级 category） */
   bulkCategory: (ids: number[], category: string | null) =>
     j<{ updated: number }>(`/api/transactions/bulk-category`, {

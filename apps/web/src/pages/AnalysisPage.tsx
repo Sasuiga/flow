@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 import {
-  CategoryCount,
+  CategoryFocus,
   FlowLine,
   FlowLink,
   FlowNode,
@@ -56,6 +56,8 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
   const [status, setStatus] = useState<FlowResponse['status'] | ''>('');
   const [message, setMessage] = useState('');
   const [result, setResult] = useState<FlowResult | null>(null);
+  const [tab, setTab] = useState<'flow' | CategoryFocus['category']>('flow');
+  const [focus, setFocus] = useState<CategoryFocus[]>([]);
 
   const apply = (res: FlowResponse) => {
     setStatus(res.status);
@@ -94,6 +96,27 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
     };
   }, [task?.id]);
 
+  useEffect(() => {
+    if (!task) {
+      setFocus([]);
+      setTab('flow');
+      return;
+    }
+    let cancel = false;
+    setTab('flow');
+    void api
+      .categoryFocus(task.id)
+      .then((r) => {
+        if (!cancel) setFocus(r.views);
+      })
+      .catch(() => {
+        if (!cancel) setFocus([]);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [task?.id]);
+
   const rerun = () => {
     if (!task) return;
     setLoading(true);
@@ -105,8 +128,31 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
       .finally(() => setLoading(false));
   };
 
+  const focusView = focus.find((v) => v.category === tab);
   return (
     <div className="page">
+      {focus.length > 0 ? (
+        <div className="analysis-tabs" role="tablist">
+          <button type="button" className={`analysis-tab${tab === 'flow' ? ' active' : ''}`} onClick={() => setTab('flow')}>
+            资金流向
+          </button>
+          {focus.map((v) => (
+            <button
+              key={v.category}
+              type="button"
+              className={`analysis-tab${tab === v.category ? ' active' : ''}`}
+              onClick={() => setTab(v.category)}
+            >
+              {v.category}
+              <span>{v.outCount + v.inCount}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {focusView ? (
+        <FocusView view={focusView} />
+      ) : (
+      <>
       <section className="page-section">
         <div className="page-header">
           <div>
@@ -156,6 +202,8 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
       </section>
 
       {result ? <FlowTables result={result} /> : null}
+      </>
+      )}
     </div>
   );
 }
@@ -322,24 +370,9 @@ function Sparkline({
 
 function FlowTables({ result }: { result: FlowResult }) {
   const [open, setOpen] = useState<string | null>(null);
-  const [cats, setCats] = useState<string[]>([]);
-  const [tags, setTags] = useState<Record<string, string | null>>({});
   const byId = new Map(result.nodes.map((n) => [n.id, n]));
   const dedicated = result.links.filter((l) => l.kind === 'dedicated');
   const own = result.links.filter((l) => l.kind === 'own');
-
-  useEffect(() => {
-    void api
-      .getCategories()
-      .then((r) => setCats(r.categories))
-      .catch(() => undefined);
-  }, []);
-
-  /** M4：批量改判后本地覆盖显示（flow 缓存里的分类分布要重新分析才会刷新） */
-  const tag = (key: string, v: string | null, txIds?: number[]) => {
-    setTags((t) => ({ ...t, [key]: v }));
-    if (txIds?.length) void api.bulkCategory(txIds, v).catch(() => undefined);
-  };
 
   return (
     <>
@@ -359,7 +392,6 @@ function FlowTables({ result }: { result: FlowResult }) {
                 <th>收入</th>
                 <th>净额</th>
                 <th>核对</th>
-                <th>分类</th>
               </tr>
             </thead>
             <tbody>
@@ -374,16 +406,6 @@ function FlowTables({ result }: { result: FlowResult }) {
                     {[l.outAmount > 0 ? `支 ${checkText(l.outAmount, l.outBoth)}` : '', l.inAmount > 0 ? `收 ${checkText(l.inAmount, l.inBoth)}` : '']
                       .filter(Boolean)
                       .join(' · ')}
-                  </td>
-                  <td>
-                    <CatBulk
-                      keyId={l.id}
-                      txIds={l.txIds}
-                      counts={l.categories}
-                      cats={cats}
-                      tags={tags}
-                      onTag={tag}
-                    />
                   </td>
                 </tr>
               ))}
@@ -407,7 +429,6 @@ function FlowTables({ result }: { result: FlowResult }) {
                 <th>转出</th>
                 <th>转入</th>
                 <th>净额</th>
-                <th>分类</th>
               </tr>
             </thead>
             <tbody>
@@ -432,20 +453,10 @@ function FlowTables({ result }: { result: FlowResult }) {
                       <td>{out ? `${formatMoney(out)} · ${outN} 笔` : '—'}</td>
                       <td>{inn ? `${formatMoney(inn)} · ${inN} 笔` : '—'}</td>
                       <td>{netText(out, inn)}</td>
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <CatBulk
-                          keyId={l.id}
-                          txIds={l.txIds}
-                          counts={l.categories}
-                          cats={cats}
-                          tags={tags}
-                          onTag={tag}
-                        />
-                      </td>
                     </tr>
                     {opened ? (
                       <tr className="flow-lines-row">
-                        <td colSpan={6}>
+                        <td colSpan={5}>
                           <LineList lines={lines} />
                         </td>
                       </tr>
@@ -458,9 +469,7 @@ function FlowTables({ result }: { result: FlowResult }) {
         </section>
       ) : null}
 
-      {result.externalLines.length > 0 ? (
-        <ExternalPay result={result} cats={cats} tags={tags} onTag={tag} />
-      ) : null}
+      {result.externalLines.length > 0 ? <ExternalPay result={result} /> : null}
 
       {result.treasuryLines.length > 0 ? (
         <section className="page-section">
@@ -469,24 +478,14 @@ function FlowTables({ result }: { result: FlowResult }) {
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>现金管理</h1>
             </div>
           </div>
-          <PartyTable lines={result.treasuryLines} cats={cats} tags={tags} onTag={tag} />
+          <PartyTable lines={result.treasuryLines} />
         </section>
       ) : null}
     </>
   );
 }
 
-function ExternalPay({
-  result,
-  cats,
-  tags,
-  onTag,
-}: {
-  result: FlowResult;
-  cats: string[];
-  tags: Record<string, string | null>;
-  onTag: (key: string, v: string | null, txIds?: number[]) => void;
-}) {
+function ExternalPay({ result }: { result: FlowResult }) {
   const [minText, setMinText] = useState('');
   const min = Number(minText.replace(/,/g, '').trim());
   const active = minText.trim() !== '' && Number.isFinite(min) && min > 0;
@@ -510,7 +509,7 @@ function ExternalPay({
         </label>
       </div>
       {lines.length > 0 ? (
-        <PartyTable lines={lines} showGroup cats={cats} tags={tags} onTag={onTag} />
+        <PartyTable lines={lines} showGroup />
       ) : (
         <div className="flow-lines-empty">没有达到这个金额的交易</div>
       )}
@@ -566,12 +565,19 @@ function LineList({ lines }: { lines: FlowLine[] }) {
           <th>对手方</th>
           <th>对手账号</th>
           <th>余额</th>
-          <th>分类</th>
         </tr>
       </thead>
       <tbody>
         {lines.map((line) => (
-          <TxCatRow key={line.id} line={line} />
+          <tr key={line.id}>
+            <td>{line.date || '—'}</td>
+            <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
+            <td>{formatMoney(line.amount)}</td>
+            <td>{line.summary || '—'}</td>
+            <td>{line.counterparty || '—'}</td>
+            <td>{line.counterpartyAccount || '—'}</td>
+            <td>{line.balance == null ? '—' : formatMoney(line.balance)}</td>
+          </tr>
         ))}
       </tbody>
     </table>
@@ -616,20 +622,7 @@ function TxCatRow({ line }: { line: FlowLine }) {
   );
 }
 
-function PartyTable({
-  lines,
-  showGroup,
-  cats,
-  tags,
-  onTag,
-}: {
-  lines: FlowPartyLine[];
-  showGroup?: boolean;
-  cats?: string[];
-  tags?: Record<string, string | null>;
-  onTag?: (key: string, v: string | null, txIds?: number[]) => void;
-}) {
-  const withCat = cats != null && tags != null && onTag != null && lines.some((l) => (l.txIds?.length ?? 0) > 0);
+function PartyTable({ lines, showGroup }: { lines: FlowPartyLine[]; showGroup?: boolean }) {
   return (
     <table className="flow-sheet">
       <thead>
@@ -639,94 +632,152 @@ function PartyTable({
           <th>笔数</th>
           <th>转出</th>
           <th>转入</th>
-          {withCat ? <th>分类</th> : null}
           {showGroup ? <th>归类</th> : null}
         </tr>
       </thead>
       <tbody>
-        {lines.map((l, i) => {
-          const catKey = `${l.name}|${l.accountTitle ?? ''}|${i}`;
-          return (
-            <tr key={`${l.name}-${l.accountTitle ?? ''}-${i}`}>
-              {lines.some((x) => x.accountTitle) ? <td>{l.accountTitle}</td> : null}
-              <td>
-                {l.name}
-                {l.accountNo ? <span className="flow-sub">{l.accountNo}</span> : null}
-              </td>
-              <td>{l.count}</td>
-              <td>{l.outAmount ? formatMoney(l.outAmount) : '—'}</td>
-              <td>{l.inAmount ? formatMoney(l.inAmount) : '—'}</td>
-              {withCat ? (
-                <td>
-                  <CatBulk
-                    keyId={catKey}
-                    txIds={l.txIds}
-                    counts={l.categories}
-                    cats={cats!}
-                    tags={tags!}
-                    onTag={onTag!}
-                  />
-                </td>
-              ) : null}
-              {showGroup ? <td>{l.grouped ? '归入对外转出' : '单独列出'}</td> : null}
-            </tr>
-          );
-        })}
+        {lines.map((l, i) => (
+          <tr key={`${l.name}-${l.accountTitle ?? ''}-${i}`}>
+            {lines.some((x) => x.accountTitle) ? <td>{l.accountTitle}</td> : null}
+            <td>
+              {l.name}
+              {l.accountNo ? <span className="flow-sub">{l.accountNo}</span> : null}
+            </td>
+            <td>{l.count}</td>
+            <td>{l.outAmount ? formatMoney(l.outAmount) : '—'}</td>
+            <td>{l.inAmount ? formatMoney(l.inAmount) : '—'}</td>
+            {showGroup ? <td>{l.grouped ? '归入对外转出' : '单独列出'}</td> : null}
+          </tr>
+        ))}
       </tbody>
     </table>
   );
 }
 
-/** 分类分布 → 展示值：单一分类直接显示；混合/有未分类时显示计数 */
-function catCountsOf(counts: CategoryCount[] | undefined): { top?: string; mixed: boolean; unclassified: number } {
-  const cs = counts ?? [];
-  const unclassified = cs.find((c) => c.category == null)?.count ?? 0;
-  const named = cs.filter((c) => c.category != null);
-  const top = named[0]?.category ?? undefined;
-  return { top, mixed: named.length > 1, unclassified };
+function ownAccount(line: CategoryFocus['lines'][number]): string {
+  const tail = line.accountNo ? line.accountNo.slice(-4) : '';
+  if (line.bank && tail) return `${line.bank} · ${tail}`;
+  return line.bank || tail || '—';
 }
 
-/** 按线路批量改判（M4）：整条线路的交易一起打标，写的是交易级 category */
-function CatBulk({
-  keyId,
-  txIds,
-  counts,
-  cats,
-  tags,
-  onTag,
-}: {
-  keyId: string;
-  txIds?: number[];
-  counts?: CategoryCount[];
-  cats: string[];
-  tags: Record<string, string | null>;
-  onTag: (key: string, v: string | null, txIds?: number[]) => void;
-}) {
-  if (!txIds || txIds.length === 0) return <span className="flow-cat-muted">—</span>;
-  const info = catCountsOf(counts);
-  const tagged = tags[keyId];
-  const value = tagged !== undefined ? (tagged ?? '') : info.mixed ? '' : info.top ?? '';
-  const label =
-    tagged !== undefined
-      ? tagged || '未分类'
-      : info.mixed
-        ? '混合'
-        : info.unclassified > 0
-          ? `${info.unclassified} 笔未分类`
-          : '未分类';
+/** 临时补流 / 现金管理专题。数字来自当前分类，打开页面即更新，不重跑资金流向。 */
+function FocusView({ view }: { view: CategoryFocus }) {
+  const bridge = view.category === '临时补流';
+  const backLabel = bridge ? '转回' : '转入';
+  const netLabel = view.netOut > 0.005 ? (bridge ? '尚未归还' : '仍在运作') : view.netOut < -0.005 ? (bridge ? '转回超出' : '收回超出') : '已轧平';
+  const note = bridge
+    ? '转出是补流，同一分类里的转入当作转回。转回如果没标成临时补流，不会算进尚未归还。'
+    : '转出是存放或申购，转入是赎回或到期。投资收益单独列出，不冲减仍在运作的本金。';
   return (
-    <select
-      className="input flow-cat-select"
-      title={`批量改判这条线路的 ${txIds.length} 笔交易`}
-      value={value}
-      onChange={(e) => onTag(keyId, e.target.value === '' ? null : e.target.value, txIds)}
-    >
-      <option value="">{label}</option>
-      {cats.map((c) => (
-        <option key={c} value={c}>
-          {c}
-        </option>
-      ))}
-    </select>
+    <>
+      <section className="page-section">
+        <div className="page-header">
+          <div>
+            <h1 style={{ fontSize: 18, marginBottom: 2 }}>{view.category}</h1>
+          </div>
+        </div>
+        <p className="flow-note">{note}</p>
+        <div className="focus-stats">
+          <div>
+            <span>转出</span>
+            <b>{formatMoney(view.outAmount)}</b>
+            <em>{view.outCount} 笔</em>
+          </div>
+          <div>
+            <span>{backLabel}</span>
+            <b>{formatMoney(view.inAmount)}</b>
+            <em>{view.inCount} 笔</em>
+          </div>
+          <div>
+            <span>{netLabel}</span>
+            <b>{formatMoney(Math.abs(view.netOut))}</b>
+          </div>
+          {view.incomeAmount != null ? (
+            <div>
+              <span>投资收益</span>
+              <b>{formatMoney(view.incomeAmount)}</b>
+              <em>{view.incomeCount} 笔</em>
+            </div>
+          ) : null}
+        </div>
+        <table className="flow-sheet">
+          <thead>
+            <tr>
+              <th>对手方</th>
+              <th>转出</th>
+              <th>{backLabel}</th>
+              <th>净额</th>
+              <th>起止</th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.parties.map((p) => (
+              <tr key={`${p.name}-${p.accountNo ?? ''}`}>
+                <td>
+                  {p.name}
+                  {p.accountNo ? <span className="flow-sub">{p.accountNo}</span> : null}
+                </td>
+                <td>{p.outAmount ? `${formatMoney(p.outAmount)} · ${p.outCount} 笔` : '—'}</td>
+                <td>{p.inAmount ? `${formatMoney(p.inAmount)} · ${p.inCount} 笔` : '—'}</td>
+                <td>{netText(p.outAmount, p.inAmount)}</td>
+                <td>{p.firstDate ? (p.lastDate && p.lastDate !== p.firstDate ? `${p.firstDate} ~ ${p.lastDate}` : p.firstDate) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+      <section className="page-section">
+        <div className="page-header">
+          <div>
+            <h1 style={{ fontSize: 18, marginBottom: 2 }}>明细</h1>
+          </div>
+        </div>
+        <FocusLines lines={view.lines} />
+      </section>
+      {view.incomeLines && view.incomeLines.length > 0 ? (
+        <section className="page-section">
+          <div className="page-header">
+            <div>
+              <h1 style={{ fontSize: 18, marginBottom: 2 }}>投资收益</h1>
+            </div>
+          </div>
+          <FocusLines lines={view.incomeLines} />
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function FocusLines({ lines }: { lines: CategoryFocus['lines'] }) {
+  return (
+    <table className="flow-sheet">
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>方向</th>
+          <th>金额</th>
+          <th>摘要</th>
+          <th>对手方</th>
+          <th>本方账户</th>
+          <th>募投项目</th>
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line) => (
+          <tr key={line.id}>
+            <td>{line.date || '—'}</td>
+            <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
+            <td>{formatMoney(line.amount)}</td>
+            <td>{line.summary || '—'}</td>
+            <td>
+              {line.counterparty || '—'}
+              {line.counterpartyAccount ? <span className="flow-sub">{line.counterpartyAccount}</span> : null}
+            </td>
+            <td>{ownAccount(line)}</td>
+            <td>{line.fundUse || '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -46,6 +46,10 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
   }
 
   useEffect(() => {
+    if (taskId == null) {
+      setRows([]);
+      return;
+    }
     void load().catch((e) => setError((e as Error).message));
     // taskId 变化时重载
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -115,7 +119,12 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
       </div>
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
-      {rows.length === 0 ? (
+      {taskId == null ? (
+        <div className="flow-empty">
+          <h3>先在右上角打开一个任务</h3>
+          <p>修正队列只显示当前任务里待复核的交易。</p>
+        </div>
+      ) : rows.length === 0 ? (
         <div className="flow-empty">
           <h3>没有待复核的交易</h3>
           <p>重新解析后，余额对不上或字段拿不准的行会出现在这里。已经入库的旧结果要重新解析才会按「照抄原文」重抽。</p>

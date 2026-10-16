@@ -3,6 +3,7 @@ import { db } from './db.js';
 import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfFiles } from './fsutil.js';
 import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
+import { categoryFocus } from './categoryFocus.js';
 import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
 import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
@@ -336,6 +337,14 @@ tasksRouter.get('/:id/flow', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
   res.json(getFlow(id));
+});
+
+tasksRouter.get('/:id/category-focus', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || !db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(id)) {
+    return res.status(404).json({ error: '任务不存在' });
+  }
+  res.json(categoryFocus(id));
 });
 
 tasksRouter.post('/:id/flow', (req, res) => {

@@ -243,6 +243,25 @@ export interface TxRow {
   reviewNote?: string;
   rawText?: string;
   status: TxStatus;
+  /** 交易页打上的关注标记。关注页的处理不会改它 */
+  watched?: boolean;
+}
+
+/** 关注页判定。没有记录时界面显示「待处理」 */
+export const WATCH_VERDICTS = ['有问题', '无问题', '已处理'] as const;
+export type WatchVerdict = (typeof WATCH_VERDICTS)[number];
+
+export interface WatchLog {
+  id: number;
+  kind: 'mark' | 'unmark' | 'note' | 'verdict';
+  body: string;
+  createdAt: string;
+}
+
+export interface WatchItem {
+  tx: TxRow;
+  verdict?: WatchVerdict;
+  logs: WatchLog[];
 }
 
 export interface TxQuery {
@@ -449,6 +468,47 @@ export interface FlowResponse {
   status: 'missing' | 'ready' | 'stale' | 'empty';
   message?: string;
   result?: FlowResult;
+}
+
+/** 分析页专题：按交易分类单独汇总，不参与资金流向重算 */
+export interface CategoryFocusParty {
+  name: string;
+  accountNo?: string;
+  outAmount: number;
+  outCount: number;
+  inAmount: number;
+  inCount: number;
+  firstDate?: string;
+  lastDate?: string;
+}
+
+export interface CategoryFocusLine {
+  id: number;
+  date?: string;
+  direction: 'in' | 'out';
+  amount: number;
+  summary?: string;
+  counterparty?: string;
+  counterpartyAccount?: string;
+  bank?: string;
+  accountNo?: string;
+  fundUse?: string;
+}
+
+export interface CategoryFocus {
+  category: '临时补流' | '现金管理';
+  outAmount: number;
+  outCount: number;
+  inAmount: number;
+  inCount: number;
+  /** 转出减转入。临时补流是尚未归还，现金管理是仍在运作 */
+  netOut: number;
+  parties: CategoryFocusParty[];
+  lines: CategoryFocusLine[];
+  /** 现金管理页附带的投资收益，不冲减本金 */
+  incomeAmount?: number;
+  incomeCount?: number;
+  incomeLines?: CategoryFocusLine[];
 }
 
 /* ---------- 默认配置 ---------- */

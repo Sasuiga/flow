@@ -8,6 +8,7 @@ import Placeholder from './pages/Placeholder';
 import SettingsPage from './pages/Settings';
 import TransactionsPage from './pages/Transactions';
 import ReviewQueue from './pages/ReviewQueue';
+import WatchPage from './pages/WatchPage';
 import AnalysisPage from './pages/AnalysisPage';
 import { api } from './api';
 import { TaskBrief } from '@flow/shared';
@@ -20,6 +21,7 @@ type View =
   | { k: 'tx'; taskId?: number; bank?: string; accountNo?: string }
   | { k: 'flow' }
   | { k: 'review' }
+  | { k: 'watch' }
   | { k: 'rules' }
   | { k: 'settings' };
 
@@ -31,6 +33,7 @@ export default function App() {
   const [view, setView] = useState<View>(() => {
     // 深链：#/client/1 /#/project/1 /#/task/1 /#/tx?task=1&file=2（刷新/分享保持位置）
     if (location.hash === '#/flow') return { k: 'flow' };
+    if (location.hash === '#/watch') return { k: 'watch' };
     const tx = location.hash.match(/^#\/tx(?:\?(.*))?$/);
     if (tx) {
       const qs = new URLSearchParams(tx[1] ?? '');
@@ -61,7 +64,7 @@ export default function App() {
   const [recentTasks, setRecentTasks] = useState<TaskBrief[]>([]);
 
   const chromeActive: FlowView =
-    view.k === 'tx' || view.k === 'flow' || view.k === 'review' || view.k === 'rules' || view.k === 'settings'
+    view.k === 'tx' || view.k === 'flow' || view.k === 'review' || view.k === 'watch' || view.k === 'rules' || view.k === 'settings'
       ? view.k
       : 'home';
 
@@ -71,6 +74,7 @@ export default function App() {
     else if (v === 'tx') setView({ k: 'tx', taskId: ctxTask?.id });
     else if (v === 'flow') setView({ k: 'flow' });
     else if (v === 'review') setView({ k: 'review' });
+    else if (v === 'watch') setView({ k: 'watch' });
     else if (v === 'rules') setView({ k: 'rules' });
     else setView({ k: 'home' });
   };
@@ -95,6 +99,7 @@ export default function App() {
   const syncHash = (v: View) => {
     if (v.k === 'client' || v.k === 'project' || v.k === 'task') location.hash = `/${v.k}/${v.id}`;
     else if (v.k === 'flow') location.hash = '/flow';
+    else if (v.k === 'watch') location.hash = '/watch';
     else if (v.k === 'tx' && (v.taskId || v.bank || v.accountNo)) {
       const qs = new URLSearchParams();
       if (v.taskId) qs.set('task', String(v.taskId));
@@ -144,7 +149,8 @@ export default function App() {
   }, [view, recentTasks]);
 
   useEffect(() => {
-    if (view.k !== 'flow' || ctxTask || recentTasks.length === 0) return;
+    const scoped = view.k === 'flow' || view.k === 'tx' || view.k === 'review' || view.k === 'watch';
+    if (!scoped || ctxTask || recentTasks.length === 0) return;
     setCtxTask(recentTasks[0]);
   }, [view, ctxTask, recentTasks]);
 
@@ -195,14 +201,15 @@ export default function App() {
         )}
         {view.k === 'tx' && (
           <TransactionsPage
-            key={`${view.taskId ?? 'all'}-${view.bank ?? ''}-${view.accountNo ?? ''}`}
-            initialTaskId={view.taskId}
+            key={`${view.taskId ?? ctxTask?.id ?? 'none'}-${view.bank ?? ''}-${view.accountNo ?? ''}`}
+            taskId={view.taskId ?? ctxTask?.id}
             initialBank={view.bank}
             initialAccountNo={view.accountNo}
           />
         )}
         {view.k === 'flow' && <AnalysisPage task={ctxTask} />}
         {view.k === 'review' && <ReviewQueue taskId={ctxTask?.id} />}
+        {view.k === 'watch' && <WatchPage taskId={ctxTask?.id} taskName={ctxTask?.name} />}
         {view.k === 'rules' && (
           <Placeholder
             name="规则"

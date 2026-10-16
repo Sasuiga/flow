@@ -9,6 +9,7 @@ import { projectsRouter, tasksRouter } from './projects.js';
 import { fsRouter } from './fs.js';
 import { transactionsRouter, filesRouter, taskListRouter } from './tx.js';
 import { categoriesRouter, categorizeTasksRouter } from './categorize.js';
+import { watchRouter } from './watchlist.js';
 import { initWatchers } from './watch.js';
 import { autoParsePending, parseQueue } from './parse.js';
 import { Settings } from '@flow/shared';
@@ -63,6 +64,7 @@ app.use('/api/tasks', categorizeTasksRouter); // M4：POST /:id/categorize
 app.use('/api/clients', clientsRouter);
 app.use('/api/fs', fsRouter);
 app.use('/api/transactions', transactionsRouter);
+app.use('/api/watch', watchRouter);
 app.use('/api/categories', categoriesRouter); // M4：分类集管理
 app.use('/api/files', filesRouter);
 
