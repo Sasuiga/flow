@@ -5,6 +5,7 @@ import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
 import { categoryFocus } from './categoryFocus.js';
 import { dedicatedBalances } from './reports.js';
+import { cashLots } from './cashLots.js';
 import { getCashMandate, saveCashMandate } from './cashMandate.js';
 import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
@@ -390,6 +391,14 @@ tasksRouter.get('/:id/dedicated-balances', (req, res) => {
   const rows = dedicatedBalances(id);
   if (!rows) return res.status(404).json({ error: '任务不存在' });
   res.json({ rows });
+});
+
+tasksRouter.get('/:id/cash-lots', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  const report = cashLots(id);
+  if (!report) return res.status(404).json({ error: '任务不存在' });
+  res.json(report);
 });
 
 tasksRouter.get('/:id/cash-mandate', (req, res) => {

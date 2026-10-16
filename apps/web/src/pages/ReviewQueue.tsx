@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TxRow } from '@flow/shared';
 import { api } from '../api';
-import { formatMoney } from '../lib/format';
+import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 
 type Draft = {
   date: string;
@@ -31,6 +31,7 @@ function draftOf(r: TxRow): Draft {
  */
 export default function ReviewQueue({ taskId }: { taskId?: number }) {
   const [rows, setRows] = useState<TxRow[]>([]);
+  const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const [catSet, setCatSet] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
@@ -116,6 +117,7 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>修正队列</h1>
           <p>按流水原文顺序。金额和方向保持识别结果；余额对不上只写在复核提示里。改完保存后，重算该文件的提示，不改其它行的数字。</p>
         </div>
+        <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>
       {error ? <div className="flow-error">{error}</div> : null}
       {notice ? <div className="flow-notice">{notice}</div> : null}
@@ -136,9 +138,9 @@ export default function ReviewQueue({ taskId }: { taskId?: number }) {
               <header className="review-card-head">
                 <span className="tx-date">{r.date ?? '—'}</span>
                 <span className={`tx-amount ${r.direction}`}>
-                  {r.direction === 'in' ? '+' : '−'} {formatMoney(r.amount)}
+                  {r.direction === 'in' ? '+' : '−'} {formatByUnit(r.amount, unit)}
                 </span>
-                <span className="tx-balance">余额 {r.balance == null ? '—' : formatMoney(r.balance)}</span>
+                <span className="tx-balance">余额 {r.balance == null ? '—' : formatByUnit(r.balance, unit)}</span>
                 <span className="review-summary">{r.summary ?? '—'}</span>
                 <span className="tx-file" title={r.fileName}>
                   {r.fileName} · 第 {r.page} 页 · 行 {r.lineNo}

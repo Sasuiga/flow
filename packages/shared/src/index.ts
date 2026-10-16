@@ -345,6 +345,53 @@ export interface DedicatedBalance {
   balance?: number;
 }
 
+/** 现金管理期末余额里，点开一行看到的流水 */
+export interface CashLotLine {
+  id: number;
+  date?: string;
+  direction: 'in' | 'out';
+  amount: number;
+  summary?: string;
+  counterparty?: string;
+  counterpartyAccount?: string;
+  category?: string;
+  /** 这一笔在该笔现金管理里扮演的角色 */
+  role: 'purchase' | 'redemption' | 'interest';
+}
+
+/**
+ * 一笔现金管理。购买和赎回按同一账户、金额和日期配对，不是银行存单号。
+ * 购买不在本期时 purchaseMissing 为真。还没赎回时 open 为真。
+ * 收益没单独入账、又减不出本金时 interestUnknown 为真。
+ */
+export interface CashLot {
+  id: string;
+  bank?: string;
+  accountNo?: string;
+  fundUse?: string;
+  purchaseAmount?: number;
+  purchaseDate?: string;
+  purchaseMissing: boolean;
+  redemptionAmount?: number;
+  redemptionDate?: string;
+  open: boolean;
+  interest?: number;
+  interestUnknown: boolean;
+  /** 同一金额有多笔、购买日不同，按先买先赎配上的 */
+  ambiguous: boolean;
+  /** 只有收益、没有配上的本金 */
+  interestOnly: boolean;
+  lines: CashLotLine[];
+}
+
+export interface CashLotReport {
+  rows: CashLot[];
+  /** 本期购买、尚未赎回的本金 */
+  ending: number;
+  /** 已经能分开的利息 */
+  interest: number;
+}
+
 /** 融资项目上手工登记的募资专户。募投项目是挂上去的，不存在流水里。 */
 export interface ProjectAccount {
   id: number;

@@ -2097,7 +2097,10 @@ select.input {
 .report-unit {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
+  flex: 0 0 auto;
   gap: 8px;
+  margin-top: 2px;
   color: var(--ui-muted);
   font-size: 12px;
 }
@@ -2115,10 +2118,24 @@ select.input {
   font-variant-numeric: tabular-nums;
 }
 
-.report-sheet .report-balance {
+.report-sheet .report-balance,
+.report-sheet .report-money {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.report-pending {
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.report-muted {
+  color: var(--ui-faint);
+}
+
+.flow-sheet tr.open-lot td {
+  background: #f6fbfa;
 }
 
 .report-sheet tfoot td {

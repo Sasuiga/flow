@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Table } from 'antd';
 import { TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
-import { formatMoney } from '../lib/format';
+import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 type TxPageProps = {
   /** 右上角当前任务。交易页只看这一份资料 */
   taskId?: number;
@@ -18,8 +18,8 @@ const STATUS_CHIP: Record<string, { cls: string; label: string }> = {
   fixed: { cls: 'chip-success', label: '已修正' },
 };
 
-function fmtAmount(n?: number): string {
-  return n == null ? '—' : formatMoney(n);
+function fmtAmount(n: number | undefined, unit: MoneyUnit): string {
+  return n == null ? '—' : formatByUnit(n, unit);
 }
 
 /**
@@ -42,6 +42,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const [bulkCat, setBulkCat] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -241,6 +242,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>交易</h1>
         </div>
+        <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>
 
       {taskId == null ? (
@@ -445,7 +447,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               align: 'right',
               render: (_: unknown, r: TxRow) => (
                 <span className={`tx-amount ${r.direction}`}>
-                  {r.direction === 'in' ? '+' : '−'} {fmtAmount(r.amount)}
+                  {r.direction === 'in' ? '+' : '−'} {fmtAmount(r.amount, unit)}
                 </span>
               ),
             },
@@ -454,7 +456,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               dataIndex: 'balance',
               width: 118,
               align: 'right',
-              render: (v: unknown) => <span className="tx-balance">{fmtAmount(typeof v === 'number' ? v : undefined)}</span>,
+              render: (v: unknown) => <span className="tx-balance">{fmtAmount(typeof v === 'number' ? v : undefined, unit)}</span>,
             },
             {
               title: '摘要',

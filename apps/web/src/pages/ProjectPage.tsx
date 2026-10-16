@@ -7,7 +7,8 @@ import { CreateDialog } from '../components/CreateDialog';
 import { ListRow, ListRowHeader } from '../components/ListRow';
 import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
-import { formatDate, formatMoney } from '../lib/format';
+import { formatDate } from '../lib/format';
+import { formatByUnit, MoneyUnit, moneyUnitName, MoneyUnitSelect } from '../lib/moneyUnit';
 
 function wanToYuan(text: string): number | null {
   const raw = text.replace(/,/g, '').trim();
@@ -62,6 +63,7 @@ type ProjectPageProps = {
 
 export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPageProps) {
   const [detail, setDetail] = useState<ProjectDetailData | null>(null);
+  const [useUnit, setUseUnit] = useState<MoneyUnit>('yuan');
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const [createOpen, setCreateOpen] = useState(false);
@@ -348,6 +350,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <button className="primary-button" disabled={!project} onClick={openUseDialog}>
                 <Plus size={15} /> 新建募投项目
               </button>
+              <MoneyUnitSelect value={useUnit} onChange={setUseUnit} />
             </div>
           </div>
 
@@ -369,7 +372,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                   { label: '名称', cls: 'list-row-col-title' },
                   { label: '性质', cls: 'use-col-kind' },
                   { label: '新增时间', cls: 'use-col-date' },
-                  { label: '调整后投资总额（万元）', cls: 'use-col-amount' },
+                  { label: `调整后投资总额（${moneyUnitName(useUnit)}）`, cls: 'use-col-amount' },
                   { label: '账户', cls: 'list-row-col-count' },
                 ]}
               />
@@ -394,7 +397,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                     <span className="use-col-kind">{u.kind || '—'}</span>
                     <span className="use-col-date">{u.kind === '新增项目' && u.addedOn ? u.addedOn : '—'}</span>
                     <span className="use-col-amount">
-                      {u.adjustedAmount != null ? formatMoney(u.adjustedAmount / 10000) : '—'}
+                      {u.adjustedAmount != null ? formatByUnit(u.adjustedAmount, useUnit) : '—'}
                     </span>
                     <span className={`list-row-col-count${n === 0 ? ' empty' : ''}`}>{n}</span>
                   </ListRow>

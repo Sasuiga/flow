@@ -26,6 +26,7 @@ import {
   CategoryFocus,
   CashMandate,
   DedicatedBalance,
+  CashLotReport,
   WatchItem,
 } from '@flow/shared';
 
@@ -129,6 +130,7 @@ export const api = {
   getFlow: (id: number) => j<FlowResponse>(`/api/tasks/${id}/flow`),
   categoryFocus: (id: number) => j<{ views: CategoryFocus[] }>(`/api/tasks/${id}/category-focus`),
   dedicatedBalances: (id: number) => j<{ rows: DedicatedBalance[] }>(`/api/tasks/${id}/dedicated-balances`),
+  cashLots: (id: number) => j<CashLotReport>(`/api/tasks/${id}/cash-lots`),
   cashMandate: (id: number) => j<CashMandate>(`/api/tasks/${id}/cash-mandate`),
   saveCashMandate: (id: number, body: { opening: number; openingAsOf: string; boards: { startDate: string; endDate: string; limitAmount: number; note: string }[] }) =>
     j<CashMandate>(`/api/tasks/${id}/cash-mandate`, { method: 'PUT', body: JSON.stringify(body) }),

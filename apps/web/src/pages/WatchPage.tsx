@@ -2,7 +2,7 @@ import { Bookmark, Inbox } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { WATCH_VERDICTS, WatchItem, WatchLog, WatchVerdict } from '@flow/shared';
 import { api } from '../api';
-import { formatMoney } from '../lib/format';
+import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 
 const VERDICT_CHIP: Record<WatchVerdict | '待处理', string> = {
   待处理: 'chip-muted',
@@ -29,6 +29,7 @@ function logTime(iso: string): string {
  */
 export default function WatchPage({ taskId, taskName }: { taskId?: number; taskName?: string }) {
   const [items, setItems] = useState<WatchItem[]>([]);
+  const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState<string | undefined>();
@@ -89,6 +90,7 @@ export default function WatchPage({ taskId, taskName }: { taskId?: number; taskN
             标记只在交易页打上或取消。这里记下的内容和判定会留在记录里，不会改掉交易页上的标记，也不会改交易本身。
           </p>
         </div>
+        <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>
 
       {error ? <div className="flow-error">{error}</div> : null}
@@ -117,7 +119,7 @@ export default function WatchPage({ taskId, taskName }: { taskId?: number; taskN
                   <span className={`chip ${VERDICT_CHIP[verdict]}`}>{verdict}</span>
                   <span className="tx-date">{r.date ?? '—'}</span>
                   <span className={`tx-amount ${r.direction}`}>
-                    {r.direction === 'in' ? '+' : '−'} {formatMoney(r.amount)}
+                    {r.direction === 'in' ? '+' : '−'} {formatByUnit(r.amount, unit)}
                   </span>
                   <span className="review-summary" title={r.summary}>
                     {r.summary || '—'}

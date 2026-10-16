@@ -11,19 +11,9 @@ import {
   TaskBrief,
 } from '@flow/shared';
 import { api } from '../api';
-import { formatDateTime, formatMoney } from '../lib/format';
+import { formatDateTime } from '../lib/format';
+import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 import CashMandatePanel from './CashMandatePanel';
-
-function compactMoney(n: number): string {
-  const v = Math.abs(n);
-  const trim = (x: number) => {
-    const s = x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2);
-    return s.replace(/\.0+$/, '').replace(/(\.\d)0$/, '$1');
-  };
-  if (v >= 1e8) return trim(v / 1e8) + '亿';
-  if (v >= 1e4) return trim(v / 1e4) + '万';
-  return formatMoney(v);
-}
 
 const KIND_LABEL: Record<FlowLink['kind'], string> = {
   dedicated: '专户间',
@@ -32,10 +22,10 @@ const KIND_LABEL: Record<FlowLink['kind'], string> = {
   treasury: '现金管理',
 };
 
-function netText(out: number, inn: number): string {
+function netText(out: number, inn: number, unit: MoneyUnit): string {
   const d = out - inn;
   if (Math.abs(d) < 0.005) return '相抵';
-  return `${d > 0 ? '净付' : '净收'} ${formatMoney(Math.abs(d))}`;
+  return `${d > 0 ? '净付' : '净收'} ${formatByUnit(Math.abs(d), unit)}`;
 }
 
 function checkText(amount: number, both: number): string {
@@ -59,6 +49,7 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
   const [result, setResult] = useState<FlowResult | null>(null);
   const [tab, setTab] = useState<'flow' | CategoryFocus['category']>('flow');
   const [focus, setFocus] = useState<CategoryFocus[]>([]);
+  const [flowUnit, setFlowUnit] = useState<MoneyUnit>('yuan');
 
   const apply = (res: FlowResponse) => {
     setStatus(res.status);
@@ -165,6 +156,7 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
                 {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
                 重新分析
               </button>
+              <MoneyUnitSelect value={flowUnit} onChange={setFlowUnit} />
             </div>
           ) : null}
         </div>
@@ -196,7 +188,7 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
             {result.skipped > 0 ? (
               <p className="flow-note">{result.skipped} 笔流水对不上募资专户，没有画进去。</p>
             ) : null}
-            {result.moves ? <FlowTimeline result={result} /> : null}
+            {result.moves ? <FlowTimeline result={result} unit={flowUnit} /> : null}
             <p className="flow-note">生成于 {formatDateTime(result.generatedAt)} · 余额为当日最后一笔之后的余额</p>
           </>
         ) : null}
@@ -233,7 +225,7 @@ function carried(points: { date: string; balance: number }[] | undefined, day: s
   return last;
 }
 
-function FlowTimeline({ result }: { result: FlowResult }) {
+function FlowTimeline({ result, unit }: { result: FlowResult; unit: MoneyUnit }) {
   const moves = result.moves ?? [];
   const days = useMemo(() => {
     const dates = [
@@ -300,15 +292,15 @@ function FlowTimeline({ result }: { result: FlowResult }) {
               </div>
               <Sparkline days={days} values={values} index={Math.min(index, days.length - 1)} onPick={pick} />
               <div className="tl-bal">
-                <b>{bal == null ? '—' : compactMoney(bal)}</b>
-                <span>{delta == null ? '' : Math.abs(delta) < 0.005 ? '与前一日相同' : `较前一日 ${delta > 0 ? '+' : '−'}${compactMoney(Math.abs(delta))}`}</span>
+                <b>{bal == null ? '—' : formatByUnit(bal, unit)}</b>
+                <span>{delta == null ? '' : Math.abs(delta) < 0.005 ? '与前一日相同' : `较前一日 ${delta > 0 ? '+' : '−'}${formatByUnit(Math.abs(delta), unit)}`}</span>
               </div>
               {mine.length > 0 ? (
                 <ul className="tl-moves">
                   {mine.map((m, i) => (
                     <li key={`${m.peer}-${m.direction}-${i}`}>
                       <em className={m.direction === 'in' ? 'in' : 'out'}>{m.direction === 'in' ? '收' : '支'}</em>
-                      <b>{compactMoney(m.amount)}{m.count > 1 ? ` · ${m.count} 笔` : ''}</b>
+                      <b>{formatByUnit(m.amount, unit)}{m.count > 1 ? ` · ${m.count} 笔` : ''}</b>
                       <span className="tl-arrow">{m.direction === 'in' ? '←' : '→'}</span>
                       <span className="tl-peer">{m.peer}</span>
                       <i className={`tl-kind ${m.kind}`}>{KIND_LABEL[m.kind]}</i>
@@ -371,6 +363,8 @@ function Sparkline({
 
 function FlowTables({ result }: { result: FlowResult }) {
   const [open, setOpen] = useState<string | null>(null);
+  const [dedicatedUnit, setDedicatedUnit] = useState<MoneyUnit>('yuan');
+  const [ownUnit, setOwnUnit] = useState<MoneyUnit>('yuan');
   const byId = new Map(result.nodes.map((n) => [n.id, n]));
   const dedicated = result.links.filter((l) => l.kind === 'dedicated');
   const own = result.links.filter((l) => l.kind === 'own');
@@ -383,6 +377,7 @@ function FlowTables({ result }: { result: FlowResult }) {
             <div>
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>专户间划转</h1>
             </div>
+            <MoneyUnitSelect value={dedicatedUnit} onChange={setDedicatedUnit} />
           </div>
           <table className="flow-sheet">
             <thead>
@@ -400,9 +395,9 @@ function FlowTables({ result }: { result: FlowResult }) {
                 <tr key={l.id}>
                   <td>{nodeName(byId.get(l.from))}</td>
                   <td>{nodeName(byId.get(l.to))}</td>
-                  <td>{l.outAmount ? `${formatMoney(l.outAmount)} · ${l.outCount} 笔` : '—'}</td>
-                  <td>{l.inAmount ? `${formatMoney(l.inAmount)} · ${l.inCount} 笔` : '—'}</td>
-                  <td>{netText(l.outAmount, l.inAmount)}</td>
+                  <td>{l.outAmount ? `${formatByUnit(l.outAmount, dedicatedUnit)} · ${l.outCount} 笔` : '—'}</td>
+                  <td>{l.inAmount ? `${formatByUnit(l.inAmount, dedicatedUnit)} · ${l.inCount} 笔` : '—'}</td>
+                  <td>{netText(l.outAmount, l.inAmount, dedicatedUnit)}</td>
                   <td>
                     {[l.outAmount > 0 ? `支 ${checkText(l.outAmount, l.outBoth)}` : '', l.inAmount > 0 ? `收 ${checkText(l.inAmount, l.inBoth)}` : '']
                       .filter(Boolean)
@@ -421,6 +416,7 @@ function FlowTables({ result }: { result: FlowResult }) {
             <div>
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>客户其他账户</h1>
             </div>
+            <MoneyUnitSelect value={ownUnit} onChange={setOwnUnit} />
           </div>
           <table className="flow-sheet">
             <thead>
@@ -451,14 +447,14 @@ function FlowTables({ result }: { result: FlowResult }) {
                         {other?.tail ? ` · ${other.tail}` : ''}
                         {other?.sub && other.sub !== other.tail ? <span className="flow-sub">{other.sub}</span> : null}
                       </td>
-                      <td>{out ? `${formatMoney(out)} · ${outN} 笔` : '—'}</td>
-                      <td>{inn ? `${formatMoney(inn)} · ${inN} 笔` : '—'}</td>
-                      <td>{netText(out, inn)}</td>
+                      <td>{out ? `${formatByUnit(out, ownUnit)} · ${outN} 笔` : '—'}</td>
+                      <td>{inn ? `${formatByUnit(inn, ownUnit)} · ${inN} 笔` : '—'}</td>
+                      <td>{netText(out, inn, ownUnit)}</td>
                     </tr>
                     {opened ? (
                       <tr className="flow-lines-row">
                         <td colSpan={5}>
-                          <LineList lines={lines} />
+                          <LineList lines={lines} unit={ownUnit} />
                         </td>
                       </tr>
                     ) : null}
@@ -471,23 +467,13 @@ function FlowTables({ result }: { result: FlowResult }) {
       ) : null}
 
       {result.externalLines.length > 0 ? <ExternalPay result={result} /> : null}
-
-      {result.treasuryLines.length > 0 ? (
-        <section className="page-section">
-          <div className="page-header">
-            <div>
-              <h1 style={{ fontSize: 18, marginBottom: 2 }}>现金管理</h1>
-            </div>
-          </div>
-          <PartyTable lines={result.treasuryLines} />
-        </section>
-      ) : null}
     </>
   );
 }
 
 function ExternalPay({ result }: { result: FlowResult }) {
   const [minText, setMinText] = useState('');
+  const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const min = Number(minText.replace(/,/g, '').trim());
   const active = minText.trim() !== '' && Number.isFinite(min) && min > 0;
   const lines = useMemo(() => (active ? externalAtLeast(result, min * 10_000) : result.externalLines), [result, active, min]);
@@ -508,9 +494,10 @@ function ExternalPay({ result }: { result: FlowResult }) {
           />
           万元
         </label>
+        <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>
       {lines.length > 0 ? (
-        <PartyTable lines={lines} showGroup />
+        <PartyTable lines={lines} showGroup unit={unit} />
       ) : (
         <div className="flow-lines-empty">没有达到这个金额的交易</div>
       )}
@@ -553,7 +540,7 @@ function matchExternal(peer: string, lines: FlowPartyLine[]): FlowPartyLine | un
   return undefined;
 }
 
-function LineList({ lines }: { lines: FlowLine[] }) {
+function LineList({ lines, unit }: { lines: FlowLine[]; unit: MoneyUnit }) {
   if (lines.length === 0) return <div className="flow-lines-empty">没有可展开的流水</div>;
   return (
     <table className="flow-lines">
@@ -573,7 +560,7 @@ function LineList({ lines }: { lines: FlowLine[] }) {
           <tr key={line.id}>
             <td>{line.date || '—'}</td>
             <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
-            <td>{formatMoney(line.amount)}</td>
+            <td>{formatByUnit(line.amount, unit)}</td>
             <td>{line.summary || '—'}</td>
             <td>{line.counterparty || '—'}</td>
             <td>{line.counterpartyAccount || '—'}</td>
@@ -598,11 +585,11 @@ function TxCatRow({ line }: { line: FlowLine }) {
     <tr>
       <td>{line.date || '—'}</td>
       <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
-      <td>{formatMoney(line.amount)}</td>
+      <td>{formatByUnit(line.amount, 'yuan')}</td>
       <td>{line.summary || '—'}</td>
       <td>{line.counterparty || '—'}</td>
       <td>{line.counterpartyAccount || '—'}</td>
-      <td>{line.balance == null ? '—' : formatMoney(line.balance)}</td>
+      <td>{line.balance == null ? '—' : formatByUnit(line.balance, 'yuan')}</td>
       <td>
         <select
           className="input flow-cat-select"
@@ -623,7 +610,7 @@ function TxCatRow({ line }: { line: FlowLine }) {
   );
 }
 
-function PartyTable({ lines, showGroup }: { lines: FlowPartyLine[]; showGroup?: boolean }) {
+function PartyTable({ lines, showGroup, unit }: { lines: FlowPartyLine[]; showGroup?: boolean; unit: MoneyUnit }) {
   return (
     <table className="flow-sheet">
       <thead>
@@ -645,8 +632,8 @@ function PartyTable({ lines, showGroup }: { lines: FlowPartyLine[]; showGroup?: 
               {l.accountNo ? <span className="flow-sub">{l.accountNo}</span> : null}
             </td>
             <td>{l.count}</td>
-            <td>{l.outAmount ? formatMoney(l.outAmount) : '—'}</td>
-            <td>{l.inAmount ? formatMoney(l.inAmount) : '—'}</td>
+            <td>{l.outAmount ? formatByUnit(l.outAmount, unit) : '—'}</td>
+            <td>{l.inAmount ? formatByUnit(l.inAmount, unit) : '—'}</td>
             {showGroup ? <td>{l.grouped ? '归入对外转出' : '单独列出'}</td> : null}
           </tr>
         ))}
@@ -686,6 +673,9 @@ function focusCopy(category: CategoryFocus['category'], netOut: number): { backL
 
 function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
   const { backLabel, netLabel, note } = focusCopy(view.category, view.netOut);
+  const [summaryUnit, setSummaryUnit] = useState<MoneyUnit>('yuan');
+  const [detailUnit, setDetailUnit] = useState<MoneyUnit>('yuan');
+  const [incomeUnit, setIncomeUnit] = useState<MoneyUnit>('yuan');
   return (
     <>
       {view.category === '现金管理' && taskId ? <CashMandatePanel taskId={taskId} lines={view.lines} /> : null}
@@ -694,27 +684,28 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
           <div>
             <h1 style={{ fontSize: 18, marginBottom: 2 }}>{view.category}</h1>
           </div>
+          <MoneyUnitSelect value={summaryUnit} onChange={setSummaryUnit} />
         </div>
         <p className="flow-note">{note}</p>
         <div className="focus-stats">
           <div>
             <span>转出</span>
-            <b>{formatMoney(view.outAmount)}</b>
+            <b>{formatByUnit(view.outAmount, summaryUnit)}</b>
             <em>{view.outCount} 笔</em>
           </div>
           <div>
             <span>{backLabel}</span>
-            <b>{formatMoney(view.inAmount)}</b>
+            <b>{formatByUnit(view.inAmount, summaryUnit)}</b>
             <em>{view.inCount} 笔</em>
           </div>
           <div>
             <span>{netLabel}</span>
-            <b>{formatMoney(Math.abs(view.netOut))}</b>
+            <b>{formatByUnit(Math.abs(view.netOut), summaryUnit)}</b>
           </div>
           {view.incomeAmount != null ? (
             <div>
               <span>投资收益</span>
-              <b>{formatMoney(view.incomeAmount)}</b>
+              <b>{formatByUnit(view.incomeAmount, summaryUnit)}</b>
               <em>{view.incomeCount} 笔</em>
             </div>
           ) : null}
@@ -736,9 +727,9 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
                   {p.name}
                   {p.accountNo ? <span className="flow-sub">{p.accountNo}</span> : null}
                 </td>
-                <td>{p.outAmount ? `${formatMoney(p.outAmount)} · ${p.outCount} 笔` : '—'}</td>
-                <td>{p.inAmount ? `${formatMoney(p.inAmount)} · ${p.inCount} 笔` : '—'}</td>
-                <td>{netText(p.outAmount, p.inAmount)}</td>
+                <td>{p.outAmount ? `${formatByUnit(p.outAmount, summaryUnit)} · ${p.outCount} 笔` : '—'}</td>
+                <td>{p.inAmount ? `${formatByUnit(p.inAmount, summaryUnit)} · ${p.inCount} 笔` : '—'}</td>
+                <td>{netText(p.outAmount, p.inAmount, summaryUnit)}</td>
                 <td>{p.firstDate ? (p.lastDate && p.lastDate !== p.firstDate ? `${p.firstDate} ~ ${p.lastDate}` : p.firstDate) : '—'}</td>
               </tr>
             ))}
@@ -750,8 +741,9 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
           <div>
             <h1 style={{ fontSize: 18, marginBottom: 2 }}>明细</h1>
           </div>
+          <MoneyUnitSelect value={detailUnit} onChange={setDetailUnit} />
         </div>
-        <FocusLines lines={view.lines} />
+        <FocusLines lines={view.lines} unit={detailUnit} />
       </section>
       {view.incomeLines && view.incomeLines.length > 0 ? (
         <section className="page-section">
@@ -759,15 +751,16 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
             <div>
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>投资收益</h1>
             </div>
+            <MoneyUnitSelect value={incomeUnit} onChange={setIncomeUnit} />
           </div>
-          <FocusLines lines={view.incomeLines} />
+          <FocusLines lines={view.incomeLines} unit={incomeUnit} />
         </section>
       ) : null}
     </>
   );
 }
 
-function FocusLines({ lines }: { lines: CategoryFocus['lines'] }) {
+function FocusLines({ lines, unit }: { lines: CategoryFocus['lines']; unit: MoneyUnit }) {
   return (
     <table className="flow-sheet">
       <thead>
@@ -786,7 +779,7 @@ function FocusLines({ lines }: { lines: CategoryFocus['lines'] }) {
           <tr key={line.id}>
             <td>{line.date || '—'}</td>
             <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
-            <td>{formatMoney(line.amount)}</td>
+            <td>{formatByUnit(line.amount, unit)}</td>
             <td>{line.summary || '—'}</td>
             <td>
               {line.counterparty || '—'}

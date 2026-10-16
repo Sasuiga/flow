@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CashBoard, CategoryFocusLine } from '@flow/shared';
 import { api } from '../api';
-import { formatMoney } from '../lib/format';
+import { formatByUnit, MoneyUnit, moneyUnitName, MoneyUnitSelect } from '../lib/moneyUnit';
 
 type DraftBoard = {
   key: string;
@@ -97,6 +97,7 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
   const [notice, setNotice] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [unit, setUnit] = useState<MoneyUnit>('yuan');
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +226,7 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>额度合规</h1>
         </div>
+        <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>
       <p className="flow-note">
         上期末仍在运作的本金手填。截止日之后，申购增加余额，赎回减少余额。一次审议只管自己的起止日期；日期重叠时，按起始日更晚的那次额度判定。
@@ -299,7 +301,7 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
         <p className="flow-note">{outside} 笔申购或赎回不在任何审议区间里，这些日子没有额度可对照。</p>
       ) : null}
 
-      {points.length > 0 ? <CashChart points={points} boards={boards} /> : null}
+      {points.length > 0 ? <CashChart points={points} boards={boards} unit={unit} /> : null}
 
       {rulings.length > 0 ? (
         <div className="cash-rulings">
@@ -314,13 +316,13 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
               <em>
                 {board.startDate} ~ {board.endDate}
               </em>
-              <span>额度 {formatMoney(board.limitAmount / 10000)} 万元</span>
+              <span>额度 {formatByUnit(board.limitAmount, unit)}</span>
               {peak == null ? (
                 <span>截止日之后，余额没有落在这个区间</span>
               ) : (
-                <span>最高余额 {formatMoney(peak / 10000)} 万元</span>
+                <span>最高余额 {formatByUnit(peak, unit)}</span>
               )}
-              {over > 0.005 ? <span>超出 {formatMoney(over / 10000)} 万元</span> : null}
+              {over > 0.005 ? <span>超出 {formatByUnit(over, unit)}</span> : null}
             </div>
           ))}
         </div>
@@ -331,10 +333,18 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
   );
 }
 
-function CashChart({ points, boards }: { points: Point[]; boards: CashBoard[] }) {
+function axisTick(n: number, unit: MoneyUnit): string {
+  if (unit === 'yuan') return compactAxis(n);
+  const abs = Math.abs(n / 10000);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 100) return sign + Math.round(abs).toLocaleString('zh-CN');
+  return sign + (Math.round(abs * 100) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
+function CashChart({ points, boards, unit }: { points: Point[]; boards: CashBoard[]; unit: MoneyUnit }) {
   const width = 720;
   const height = 240;
-  const pad = { l: 58, r: 16, t: 16, b: 32 };
+  const pad = { l: unit === 'wan' ? 68 : 58, r: 16, t: 16, b: 32 };
   const start = points[0].date;
   const end = points[points.length - 1].date;
   const span = Math.max(1, spanDays(start, end));
@@ -382,7 +392,7 @@ function CashChart({ points, boards }: { points: Point[]; boards: CashBoard[] })
           <g key={tick}>
             <line x1={pad.l} x2={width - pad.r} y1={y(tick)} y2={y(tick)} className={Math.abs(tick) < 1 ? 'cash-grid zero' : 'cash-grid'} />
             <text x={pad.l - 6} y={y(tick) + 4} className="cash-axis" textAnchor="end">
-              {compactAxis(tick)}
+              {axisTick(tick, unit)}
             </text>
           </g>
         ))}
@@ -426,6 +436,7 @@ function CashChart({ points, boards }: { points: Point[]; boards: CashBoard[] })
         <span><i className="cash-swatch line" /> 余额</span>
         <span><i className="cash-swatch cap" /> 当时额度</span>
         <span><i className="cash-swatch over" /> 超标</span>
+        <span>纵轴：{moneyUnitName(unit)}</span>
       </div>
     </div>
   );
