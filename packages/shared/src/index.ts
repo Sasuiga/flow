@@ -302,15 +302,47 @@ export interface TxOptions {
   categories: string[];
 }
 
+export type FundUseKind = '原始项目' | '新增项目';
+
 export interface FundUse {
   id: number;
   projectId: number;
   name: string;
+  kind?: FundUseKind;
+  /** 项目性质为新增项目时的新增时间 */
+  addedOn?: string;
+  /** 调整后投资总额，元 */
+  adjustedAmount?: number;
 }
 
 /** 账号比对键：去掉空白和横线，字母大写。手工清单和解析结果用同一把尺子。 */
 export function normAccountNo(raw: string | null | undefined): string {
   return String(raw ?? '').replace(/[\s\u3000\-]/g, '').toUpperCase();
+}
+
+/** 现金管理：上期末仍在运作的本金，以及各次董事会审议的时间与额度。金额都是元。 */
+export interface CashBoard {
+  id: number;
+  startDate: string;
+  endDate: string;
+  limitAmount: number;
+  note: string;
+}
+
+export interface CashMandate {
+  opening: number;
+  /** 上期末余额的截止日。这一天之后的申购、赎回才增减余额 */
+  openingAsOf: string;
+  boards: CashBoard[];
+}
+
+/** 报表：当前任务里每个募集资金专户流水的最终余额 */
+export interface DedicatedBalance {
+  holder: string;
+  bank: string;
+  accountNo: string;
+  /** 该专户流水中日期最晚、且印有余额的那一笔。没有流水则为空 */
+  balance?: number;
 }
 
 /** 融资项目上手工登记的募资专户。募投项目是挂上去的，不存在流水里。 */

@@ -1,13 +1,21 @@
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { AutoComplete } from 'antd';
-import { CreateEntityInput, FundUse, ProjectAccount, ProjectView, TaskView } from '@flow/shared';
+import { CreateEntityInput, FundUse, FundUseKind, ProjectAccount, ProjectView, TaskView } from '@flow/shared';
 import { api, ProjectDetail as ProjectDetailData } from '../api';
 import { CreateDialog } from '../components/CreateDialog';
 import { ListRow, ListRowHeader } from '../components/ListRow';
 import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
-import { formatDate } from '../lib/format';
+import { formatDate, formatMoney } from '../lib/format';
+
+function wanToYuan(text: string): number | null {
+  const raw = text.replace(/,/g, '').trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 10000 * 100) / 100;
+}
 
 function filledChoices(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
@@ -62,6 +70,9 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
   const [useOpen, setUseOpen] = useState(false);
   const [useName, setUseName] = useState('');
+  const [useKind, setUseKind] = useState<FundUseKind>('原始项目');
+  const [useAddedOn, setUseAddedOn] = useState('');
+  const [useAmountWan, setUseAmountWan] = useState('');
   const [useBusy, setUseBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<FundUse | null>(null);
   const [renameName, setRenameName] = useState('');
@@ -129,12 +140,27 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
+  function openUseDialog() {
+    setUseName('');
+    setUseKind('原始项目');
+    setUseAddedOn('');
+    setUseAmountWan('');
+    setUseOpen(true);
+  }
+
   async function addUse() {
     const name = useName.trim();
-    if (!name || !project) return;
+    const adjustedAmount = wanToYuan(useAmountWan);
+    if (!name || !project || adjustedAmount == null) return;
+    if (useKind === '新增项目' && !useAddedOn) return;
     setUseBusy(true);
     try {
-      await api.createFundUse(project.id, name);
+      await api.createFundUse(project.id, {
+        name,
+        kind: useKind,
+        addedOn: useKind === '新增项目' ? useAddedOn : '',
+        adjustedAmount,
+      });
       setUseName('');
       setUseOpen(false);
       await load();
@@ -319,7 +345,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>募投项目</h1>
             </div>
             <div className="page-header-actions">
-              <button className="primary-button" disabled={!project} onClick={() => { setUseName(''); setUseOpen(true); }}>
+              <button className="primary-button" disabled={!project} onClick={openUseDialog}>
                 <Plus size={15} /> 新建募投项目
               </button>
             </div>
@@ -330,7 +356,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <h3>还没有募投项目</h3>
               <p>建好后，在募资专户里选上对应项目。</p>
               <div className="flow-empty-actions">
-                <button className="primary-button" onClick={() => { setUseName(''); setUseOpen(true); }}>
+                <button className="primary-button" onClick={openUseDialog}>
                   <Plus size={15} /> 新建募投项目
                 </button>
               </div>
@@ -341,6 +367,9 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                 withMenu
                 cols={[
                   { label: '名称', cls: 'list-row-col-title' },
+                  { label: '性质', cls: 'use-col-kind' },
+                  { label: '新增时间', cls: 'use-col-date' },
+                  { label: '调整后投资总额（万元）', cls: 'use-col-amount' },
                   { label: '账户', cls: 'list-row-col-count' },
                 ]}
               />
@@ -362,6 +391,11 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                     ]}
                   >
                     <span className="list-row-col-title">{u.name}</span>
+                    <span className="use-col-kind">{u.kind || '—'}</span>
+                    <span className="use-col-date">{u.kind === '新增项目' && u.addedOn ? u.addedOn : '—'}</span>
+                    <span className="use-col-amount">
+                      {u.adjustedAmount != null ? formatMoney(u.adjustedAmount / 10000) : '—'}
+                    </span>
                     <span className={`list-row-col-count${n === 0 ? ' empty' : ''}`}>{n}</span>
                   </ListRow>
                 );
@@ -493,7 +527,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       ) : null}
 
       {useOpen ? (
-        <Modal title="新建募投项目" onClose={() => !useBusy && setUseOpen(false)} disableDismiss={useBusy} width={420}>
+        <Modal title="新建募投项目" onClose={() => !useBusy && setUseOpen(false)} disableDismiss={useBusy} width={440}>
           <div className="field">
             <span className="field-label">名称</span>
             <input
@@ -507,11 +541,49 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               }}
             />
           </div>
+          <div className="field">
+            <span className="field-label">项目性质</span>
+            <select
+              className="input"
+              value={useKind}
+              onChange={(e) => {
+                const next = e.target.value as FundUseKind;
+                setUseKind(next);
+                if (next === '原始项目') setUseAddedOn('');
+              }}
+            >
+              <option value="原始项目">原始项目</option>
+              <option value="新增项目">新增项目</option>
+            </select>
+          </div>
+          {useKind === '新增项目' ? (
+            <div className="field">
+              <span className="field-label">新增时间</span>
+              <input className="input" type="date" value={useAddedOn} onChange={(e) => setUseAddedOn(e.target.value)} />
+            </div>
+          ) : null}
+          <div className="field">
+            <span className="field-label">调整后投资总额（万元）</span>
+            <input
+              className="input"
+              inputMode="decimal"
+              value={useAmountWan}
+              placeholder="例如 12000"
+              onChange={(e) => setUseAmountWan(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addUse();
+              }}
+            />
+          </div>
           <div className="modal-actions">
             <button className="secondary-button" disabled={useBusy} onClick={() => setUseOpen(false)}>
               取消
             </button>
-            <button className="primary-button" disabled={useBusy || !useName.trim()} onClick={() => void addUse()}>
+            <button
+              className="primary-button"
+              disabled={useBusy || !useName.trim() || wanToYuan(useAmountWan) == null || (useKind === '新增项目' && !useAddedOn)}
+              onClick={() => void addUse()}
+            >
               创建
             </button>
           </div>

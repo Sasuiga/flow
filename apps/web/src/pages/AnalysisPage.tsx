@@ -12,6 +12,7 @@ import {
 } from '@flow/shared';
 import { api } from '../api';
 import { formatDateTime, formatMoney } from '../lib/format';
+import CashMandatePanel from './CashMandatePanel';
 
 function compactMoney(n: number): string {
   const v = Math.abs(n);
@@ -150,7 +151,7 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
         </div>
       ) : null}
       {focusView ? (
-        <FocusView view={focusView} />
+        <FocusView view={focusView} taskId={task?.id} />
       ) : (
       <>
       <section className="page-section">
@@ -683,10 +684,11 @@ function focusCopy(category: CategoryFocus['category'], netOut: number): { backL
   };
 }
 
-function FocusView({ view }: { view: CategoryFocus }) {
+function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
   const { backLabel, netLabel, note } = focusCopy(view.category, view.netOut);
   return (
     <>
+      {view.category === '现金管理' && taskId ? <CashMandatePanel taskId={taskId} lines={view.lines} /> : null}
       <section className="page-section">
         <div className="page-header">
           <div>

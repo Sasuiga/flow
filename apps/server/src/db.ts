@@ -142,6 +142,24 @@ CREATE TABLE IF NOT EXISTS tx_watch_log (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_watch_log_tx ON tx_watch_log(transaction_id, id);
+-- 现金管理合规：上期末余额和董事会审议额度，按任务手填，不改交易。
+CREATE TABLE IF NOT EXISTS cash_opening (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  amount REAL NOT NULL DEFAULT 0,
+  as_of TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cash_board (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  limit_amount REAL NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cash_board_task ON cash_board(task_id, start_date);
 `);
 
 /* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */
@@ -188,6 +206,9 @@ CREATE TABLE IF NOT EXISTS fund_uses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  added_on TEXT NOT NULL DEFAULT '',
+  adjusted_amount REAL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(project_id, name)
@@ -215,6 +236,13 @@ for (const [col, ddl] of [
   ['created_at', `ALTER TABLE fund_use_accounts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`],
 ] as const) {
   if (!tableCols('fund_use_accounts').includes(col)) db.exec(ddl);
+}
+for (const [col, ddl] of [
+  ['kind', `ALTER TABLE fund_uses ADD COLUMN kind TEXT NOT NULL DEFAULT ''`],
+  ['added_on', `ALTER TABLE fund_uses ADD COLUMN added_on TEXT NOT NULL DEFAULT ''`],
+  ['adjusted_amount', `ALTER TABLE fund_uses ADD COLUMN adjusted_amount REAL`],
+] as const) {
+  if (!tableCols('fund_uses').includes(col)) db.exec(ddl);
 }
 db.exec(`UPDATE fund_use_accounts SET created_at = updated_at WHERE created_at = ''`);
 {

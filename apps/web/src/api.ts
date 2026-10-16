@@ -24,6 +24,8 @@ import {
   ProjectAccount,
   FlowResponse,
   CategoryFocus,
+  CashMandate,
+  DedicatedBalance,
   WatchItem,
 } from '@flow/shared';
 
@@ -104,8 +106,10 @@ export const api = {
   createTask: (projectId: number, i: CreateEntityInput) =>
     j<FlowTask>(`/api/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(i) }),
   openProjectFolder: (id: number) => j<{ ok: boolean }>(`/api/projects/${id}/open`, { method: 'POST' }),
-  createFundUse: (projectId: number, name: string) =>
-    j<FundUse>(`/api/projects/${projectId}/uses`, { method: 'POST', body: JSON.stringify({ name }) }),
+  createFundUse: (
+    projectId: number,
+    body: { name: string; kind: '原始项目' | '新增项目'; addedOn: string; adjustedAmount: number },
+  ) => j<FundUse>(`/api/projects/${projectId}/uses`, { method: 'POST', body: JSON.stringify(body) }),
   renameFundUse: (projectId: number, useId: number, name: string) =>
     j<FundUse>(`/api/projects/${projectId}/uses/${useId}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   deleteFundUse: (projectId: number, useId: number) =>
@@ -124,6 +128,10 @@ export const api = {
   getTask: (id: number) => j<TaskDetail>(`/api/tasks/${id}`),
   getFlow: (id: number) => j<FlowResponse>(`/api/tasks/${id}/flow`),
   categoryFocus: (id: number) => j<{ views: CategoryFocus[] }>(`/api/tasks/${id}/category-focus`),
+  dedicatedBalances: (id: number) => j<{ rows: DedicatedBalance[] }>(`/api/tasks/${id}/dedicated-balances`),
+  cashMandate: (id: number) => j<CashMandate>(`/api/tasks/${id}/cash-mandate`),
+  saveCashMandate: (id: number, body: { opening: number; openingAsOf: string; boards: { startDate: string; endDate: string; limitAmount: number; note: string }[] }) =>
+    j<CashMandate>(`/api/tasks/${id}/cash-mandate`, { method: 'PUT', body: JSON.stringify(body) }),
   runFlow: (id: number, force = false) =>
     j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force }) }),
   /** M4：任务级 LLM 批量分类（force=连 LLM 已分的也重分，人工改判不动） */

@@ -4,9 +4,11 @@ import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfF
 import { toProjectView } from './clients.js';
 import { refreshTaskFilesAuto } from './parse.js';
 import { categoryFocus } from './categoryFocus.js';
+import { dedicatedBalances } from './reports.js';
+import { getCashMandate, saveCashMandate } from './cashMandate.js';
 import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
-import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
@@ -75,14 +77,52 @@ function refreshTaskFiles(taskId: number, folderPath: string): number {
 }
 void refreshTaskFiles;
 
-function listFundUses(projectId: number): FundUse[] {
-  return (
-    db.prepare('SELECT * FROM fund_uses WHERE project_id = ? ORDER BY name').all(projectId) as Record<string, unknown>[]
-  ).map((r) => ({
+const FUND_KINDS: FundUseKind[] = ['原始项目', '新增项目'];
+
+function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+function toFundUse(r: Record<string, unknown>): FundUse {
+  const kind = String(r.kind ?? '');
+  const addedOn = String(r.added_on ?? '');
+  const amount = r.adjusted_amount == null || r.adjusted_amount === '' ? undefined : Number(r.adjusted_amount);
+  return {
     id: Number(r.id),
     projectId: Number(r.project_id),
     name: String(r.name),
-  }));
+    kind: FUND_KINDS.includes(kind as FundUseKind) ? (kind as FundUseKind) : undefined,
+    addedOn: addedOn || undefined,
+    adjustedAmount: amount != null && Number.isFinite(amount) ? amount : undefined,
+  };
+}
+
+function readFundUseBody(
+  body: unknown,
+): { name: string; kind: FundUseKind; addedOn: string; adjustedAmount: number } | { error: string } {
+  const b = (body ?? {}) as { name?: unknown; kind?: unknown; addedOn?: unknown; adjustedAmount?: unknown };
+  const name = String(b.name ?? '').trim();
+  if (!name) return { error: '请填写募投项目名称' };
+  const kind = String(b.kind ?? '');
+  if (!FUND_KINDS.includes(kind as FundUseKind)) return { error: '请选择项目性质' };
+  const addedOn = String(b.addedOn ?? '').trim();
+  if (kind === '新增项目') {
+    if (!isIsoDate(addedOn)) return { error: '请填写新增时间' };
+  } else if (addedOn) {
+    return { error: '原始项目不用填写新增时间' };
+  }
+  const adjustedAmount = Number(b.adjustedAmount);
+  if (!Number.isFinite(adjustedAmount) || adjustedAmount <= 0) return { error: '请填写调整后投资总额' };
+  return { name, kind: kind as FundUseKind, addedOn: kind === '新增项目' ? addedOn : '', adjustedAmount };
+}
+
+function listFundUses(projectId: number): FundUse[] {
+  return (
+    db.prepare('SELECT * FROM fund_uses WHERE project_id = ? ORDER BY name').all(projectId) as Record<string, unknown>[]
+  ).map(toFundUse);
 }
 
 function toProjectAccount(r: Record<string, unknown>): ProjectAccount {
@@ -162,13 +202,17 @@ projectsRouter.post('/:id/uses', (req, res) => {
   const projectId = Number(req.params.id);
   const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
   if (!project) return res.status(404).json({ error: '项目不存在' });
-  const name = String((req.body as { name?: string })?.name ?? '').trim();
-  if (!name) return res.status(400).json({ error: '请填写募投项目名称' });
+  const parsed = readFundUseBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
   try {
     const r = db
-      .prepare('INSERT INTO fund_uses(project_id, name, created_at, updated_at) VALUES(?,?,?,?)')
-      .run(projectId, name, now(), now());
-    res.json({ id: Number(r.lastInsertRowid), projectId, name } satisfies FundUse);
+      .prepare(
+        `INSERT INTO fund_uses(project_id, name, kind, added_on, adjusted_amount, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?)`,
+      )
+      .run(projectId, parsed.name, parsed.kind, parsed.addedOn, parsed.adjustedAmount, now(), now());
+    const saved = db.prepare('SELECT * FROM fund_uses WHERE id = ?').get(Number(r.lastInsertRowid)) as Record<string, unknown>;
+    res.json(toFundUse(saved));
   } catch {
     res.status(409).json({ error: '已有同名募投项目' });
   }
@@ -183,7 +227,8 @@ projectsRouter.patch('/:id/uses/:useId', (req, res) => {
   if (!row) return res.status(404).json({ error: '募投项目不存在' });
   try {
     db.prepare('UPDATE fund_uses SET name = ?, updated_at = ? WHERE id = ?').run(name, now(), useId);
-    res.json({ id: useId, projectId, name } satisfies FundUse);
+    const saved = db.prepare('SELECT * FROM fund_uses WHERE id = ?').get(useId) as Record<string, unknown>;
+    res.json(toFundUse(saved));
   } catch {
     res.status(409).json({ error: '已有同名募投项目' });
   }
@@ -337,6 +382,30 @@ tasksRouter.get('/:id/flow', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
   res.json(getFlow(id));
+});
+
+tasksRouter.get('/:id/dedicated-balances', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  const rows = dedicatedBalances(id);
+  if (!rows) return res.status(404).json({ error: '任务不存在' });
+  res.json({ rows });
+});
+
+tasksRouter.get('/:id/cash-mandate', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  const mandate = getCashMandate(id);
+  if (!mandate) return res.status(404).json({ error: '任务不存在' });
+  res.json(mandate);
+});
+
+tasksRouter.put('/:id/cash-mandate', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
+  const saved = saveCashMandate(id, (req.body ?? {}) as { opening?: unknown; openingAsOf?: unknown; boards?: unknown });
+  if ('error' in saved) return res.status(400).json({ error: saved.error });
+  res.json(saved.mandate);
 });
 
 tasksRouter.get('/:id/category-focus', (req, res) => {
