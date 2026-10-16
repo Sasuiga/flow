@@ -1,14 +1,15 @@
 /**
- * 分析页专题（临时补流 / 现金管理）
+ * 分析页专题（临时补流 / 现金管理 / 实施中置换）
  *
  * 只读交易上的分类，现算现给。不写入 flow_analyses，改分类不会让资金流向重算。
  * 临时补流：转出是补流，同分类的转入当作转回，差额是尚未归还。
  * 现金管理：转出是存放或申购，转入是赎回或到期，差额是仍在运作。投资收益单独列出，不冲减本金。
+ * 实施中置换：转出是用募集资金置换实施期间已投入的资金，同分类转入从已置换金额里扣掉。
  */
 import { db } from './db.js';
 import { CategoryFocus, CategoryFocusLine, CategoryFocusParty } from '@flow/shared';
 
-const FOCUS = ['临时补流', '现金管理'] as const;
+const FOCUS = ['临时补流', '现金管理', '实施中置换'] as const;
 
 interface Raw {
   id: number;
@@ -107,7 +108,7 @@ export function categoryFocus(taskId: number): { views: CategoryFocus[] } {
         AND fua.account_key != ''
         AND fua.account_key = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(f.account_no, ''), ' ', ''), char(9), ''), '-', ''), '　', ''))
        LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
-       WHERE f.task_id = ? AND t.category IN ('临时补流', '现金管理', '现金管理投资收益')
+       WHERE f.task_id = ? AND t.category IN ('临时补流', '现金管理', '现金管理投资收益', '实施中置换')
        ORDER BY t.date IS NULL, t.date, t.id`,
     )
     .all(taskId) as Raw[];

@@ -564,7 +564,7 @@ function LineList({ lines }: { lines: FlowLine[] }) {
           <th>摘要</th>
           <th>对手方</th>
           <th>对手账号</th>
-          <th>余额</th>
+          <th>分类</th>
         </tr>
       </thead>
       <tbody>
@@ -576,7 +576,7 @@ function LineList({ lines }: { lines: FlowLine[] }) {
             <td>{line.summary || '—'}</td>
             <td>{line.counterparty || '—'}</td>
             <td>{line.counterpartyAccount || '—'}</td>
-            <td>{line.balance == null ? '—' : formatMoney(line.balance)}</td>
+            <td className={line.category ? undefined : 'flow-cat-muted'}>{line.category || '未分类'}</td>
           </tr>
         ))}
       </tbody>
@@ -660,14 +660,31 @@ function ownAccount(line: CategoryFocus['lines'][number]): string {
   return line.bank || tail || '—';
 }
 
-/** 临时补流 / 现金管理专题。数字来自当前分类，打开页面即更新，不重跑资金流向。 */
+/** 分类专题。数字来自当前分类，打开页面即更新，不重跑资金流向。 */
+function focusCopy(category: CategoryFocus['category'], netOut: number): { backLabel: string; netLabel: string; note: string } {
+  if (category === '临时补流') {
+    return {
+      backLabel: '转回',
+      netLabel: netOut > 0.005 ? '尚未归还' : netOut < -0.005 ? '转回超出' : '已轧平',
+      note: '转出是补流，同一分类里的转入当作转回。转回如果没标成临时补流，不会算进尚未归还。',
+    };
+  }
+  if (category === '实施中置换') {
+    return {
+      backLabel: '转入',
+      netLabel: netOut > 0.005 ? '已置换' : netOut < -0.005 ? '转入超出' : '已轧平',
+      note: '转出是用募集资金置换实施期间已经投入的资金。同一分类里的转入会从已置换金额里扣掉。',
+    };
+  }
+  return {
+    backLabel: '转入',
+    netLabel: netOut > 0.005 ? '仍在运作' : netOut < -0.005 ? '收回超出' : '已轧平',
+    note: '转出是存放或申购，转入是赎回或到期。投资收益单独列出，不冲减仍在运作的本金。',
+  };
+}
+
 function FocusView({ view }: { view: CategoryFocus }) {
-  const bridge = view.category === '临时补流';
-  const backLabel = bridge ? '转回' : '转入';
-  const netLabel = view.netOut > 0.005 ? (bridge ? '尚未归还' : '仍在运作') : view.netOut < -0.005 ? (bridge ? '转回超出' : '收回超出') : '已轧平';
-  const note = bridge
-    ? '转出是补流，同一分类里的转入当作转回。转回如果没标成临时补流，不会算进尚未归还。'
-    : '转出是存放或申购，转入是赎回或到期。投资收益单独列出，不冲减仍在运作的本金。';
+  const { backLabel, netLabel, note } = focusCopy(view.category, view.netOut);
   return (
     <>
       <section className="page-section">

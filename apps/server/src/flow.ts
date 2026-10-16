@@ -754,6 +754,32 @@ async function compute(taskId: number): Promise<FlowResponse> {
   return { status: 'ready', result };
 }
 
+/** 展开行上的分类跟交易页走。资金流向结构仍用缓存，不因改分类重算。 */
+function applyCurrentCategories(result: FlowResult): void {
+  const ids = new Set<number>();
+  for (const link of result.links ?? []) {
+    for (const line of link.lines ?? []) ids.add(line.id);
+  }
+  if (ids.size === 0) return;
+  const list = [...ids];
+  const current = new Map<number, string | undefined>();
+  for (let i = 0; i < list.length; i += 400) {
+    const slice = list.slice(i, i + 400);
+    const rows = db
+      .prepare(`SELECT id, category FROM transactions WHERE id IN (${slice.map(() => '?').join(',')})`)
+      .all(...slice) as { id: number; category: string | null }[];
+    for (const row of rows) {
+      const category = String(row.category ?? '').trim();
+      current.set(row.id, category || undefined);
+    }
+  }
+  for (const link of result.links ?? []) {
+    for (const line of link.lines ?? []) {
+      if (current.has(line.id)) line.category = current.get(line.id);
+    }
+  }
+}
+
 function readCache(taskId: number, sig: string, legacy: string): FlowResponse | null {
   const row = db.prepare('SELECT signature, payload FROM flow_analyses WHERE task_id = ?').get(taskId) as
     | { signature: string; payload: string }
@@ -761,6 +787,7 @@ function readCache(taskId: number, sig: string, legacy: string): FlowResponse | 
   if (!row) return null;
   try {
     const result = JSON.parse(row.payload) as FlowResult;
+    applyCurrentCategories(result);
     if (row.signature === sig) return { status: 'ready', result };
     if (row.signature === legacy) {
       db.prepare('UPDATE flow_analyses SET signature = ? WHERE task_id = ?').run(sig, taskId);

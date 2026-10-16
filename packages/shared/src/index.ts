@@ -496,12 +496,12 @@ export interface CategoryFocusLine {
 }
 
 export interface CategoryFocus {
-  category: '临时补流' | '现金管理';
+  category: '临时补流' | '现金管理' | '实施中置换';
   outAmount: number;
   outCount: number;
   inAmount: number;
   inCount: number;
-  /** 转出减转入。临时补流是尚未归还，现金管理是仍在运作 */
+  /** 转出减转入。临时补流是尚未归还，现金管理是仍在运作，实施中置换是已置换 */
   netOut: number;
   parties: CategoryFocusParty[];
   lines: CategoryFocusLine[];
