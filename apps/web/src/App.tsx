@@ -7,7 +7,6 @@ import { TaskPage } from './pages/TaskPage';
 import Placeholder from './pages/Placeholder';
 import SettingsPage from './pages/Settings';
 import TransactionsPage from './pages/Transactions';
-import ReviewQueue from './pages/ReviewQueue';
 import WatchPage from './pages/WatchPage';
 import ReportPage from './pages/ReportPage';
 import AnalysisPage from './pages/AnalysisPage';
@@ -21,7 +20,6 @@ type View =
   | { k: 'task'; id: number }
   | { k: 'tx'; taskId?: number; bank?: string; accountNo?: string }
   | { k: 'flow' }
-  | { k: 'review' }
   | { k: 'watch' }
   | { k: 'report' }
   | { k: 'rules' }
@@ -67,7 +65,7 @@ export default function App() {
   const [recentTasks, setRecentTasks] = useState<TaskBrief[]>([]);
 
   const chromeActive: FlowView =
-    view.k === 'tx' || view.k === 'flow' || view.k === 'review' || view.k === 'watch' || view.k === 'report' || view.k === 'rules' || view.k === 'settings'
+    view.k === 'tx' || view.k === 'flow' || view.k === 'watch' || view.k === 'report' || view.k === 'rules' || view.k === 'settings'
       ? view.k
       : 'home';
 
@@ -76,7 +74,6 @@ export default function App() {
     if (v === 'settings') setView({ k: 'settings' });
     else if (v === 'tx') setView({ k: 'tx', taskId: ctxTask?.id });
     else if (v === 'flow') setView({ k: 'flow' });
-    else if (v === 'review') setView({ k: 'review' });
     else if (v === 'watch') setView({ k: 'watch' });
     else if (v === 'report') setView({ k: 'report' });
     else if (v === 'rules') setView({ k: 'rules' });
@@ -154,7 +151,7 @@ export default function App() {
   }, [view, recentTasks]);
 
   useEffect(() => {
-    const scoped = view.k === 'flow' || view.k === 'tx' || view.k === 'review' || view.k === 'watch' || view.k === 'report';
+    const scoped = view.k === 'flow' || view.k === 'tx' || view.k === 'watch' || view.k === 'report';
     if (!scoped || ctxTask || recentTasks.length === 0) return;
     setCtxTask(recentTasks[0]);
   }, [view, ctxTask, recentTasks]);
@@ -213,7 +210,6 @@ export default function App() {
           />
         )}
         {view.k === 'flow' && <AnalysisPage task={ctxTask} />}
-        {view.k === 'review' && <ReviewQueue taskId={ctxTask?.id} />}
         {view.k === 'watch' && <WatchPage taskId={ctxTask?.id} taskName={ctxTask?.name} />}
         {view.k === 'report' && <ReportPage taskId={ctxTask?.id} taskName={ctxTask?.name} />}
         {view.k === 'rules' && (

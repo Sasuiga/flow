@@ -719,7 +719,7 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
         <table className="flow-sheet">
           <thead>
             <tr>
-              <th>对手方</th>
+              <th>{view.category === '实施中置换' ? '募资专户' : '对手方'}</th>
               <th>转出</th>
               <th>{backLabel}</th>
               <th>净额</th>

@@ -335,12 +335,24 @@ export function annotateBalanceReviews(txs: NormTx[]): void {
   }
 }
 
+export type BalanceRecalc = {
+  reviewCount: number;
+  /** 本笔相对上一笔。null=缺余额无法测算；空串=衔接；否则为「余额断裂…」 */
+  selfGap: string | null;
+  /** 紧接的下一笔相对本笔。含义同 selfGap */
+  nextGap: string | null;
+  /** 印刷顺序上还有下一笔 */
+  hasNext: boolean;
+};
+
 /**
- * 人工改完一行后，按印刷顺序重算该文件的复核提示（M3：修正后复算）。
+ * 人工改完一行后，按印刷顺序重算该文件每一笔的前后余额。
+ * 原来标成正常的行也参与：本笔用上一笔余额 ± 本笔金额对照本笔余额，
+ * 下一笔用本笔余额 ± 下一笔金额对照下一笔余额。对不上就改为待复核。
  * 只更新 review_note / status，不回写金额、方向、余额、日期。
- * editedId：这次人工保存的行；复算通过则标 fixed。
+ * editedId：这次人工保存的行；本笔复算通过则标 fixed。
  */
-export function recomputeFileBalanceReviews(fileId: number, editedId?: number): number {
+export function recomputeFileBalanceReviews(fileId: number, editedId?: number): BalanceRecalc {
   const rows = db
     .prepare(
       `SELECT id, page, line_no, amount, direction, balance, review_note, status
@@ -359,24 +371,38 @@ export function recomputeFileBalanceReviews(fileId: number, editedId?: number): 
   const upd = db.prepare('UPDATE transactions SET review_note = ?, status = ? WHERE id = ?');
   let prev: number | undefined;
   let reviewCount = 0;
+  let selfGap: string | null = null;
+  let nextGap: string | null = null;
+  let hasNext = false;
+  let seenEdit = false;
   const apply = db.transaction(() => {
     for (const r of rows) {
       let note = stripBalanceNote(r.review_note ?? '');
+      // null：上一笔或本笔没有印出余额，这条衔接测不了。空串：测过且衔接。
+      let gap: string | null = null;
       if (prev != null && r.balance != null) {
-        const gap = balanceGapNote(prev, r.direction, Number(r.amount), Number(r.balance));
+        gap = balanceGapNote(prev, r.direction, Number(r.amount), Number(r.balance)) ?? '';
         if (gap) note = note ? `${note}；${gap}` : gap;
       }
       if (r.balance != null) prev = Number(r.balance);
+      // 有断裂说明就待复核，不管改之前是不是「正常」
       const status = note ? 'needs_review' : r.id === editedId || r.status === 'fixed' ? 'fixed' : 'ok';
       if (note) reviewCount++;
       upd.run(note || null, status, r.id);
+      if (editedId != null && r.id === editedId) {
+        selfGap = gap;
+        seenEdit = true;
+      } else if (seenEdit && !hasNext) {
+        hasNext = true;
+        nextGap = gap;
+      }
     }
     db.prepare(
       `UPDATE files SET status = ?, updated_at = ? WHERE id = ? AND status IN ('done','needs_review')`,
     ).run(reviewCount > 0 ? 'needs_review' : 'done', new Date().toISOString(), fileId);
   });
   apply();
-  return reviewCount;
+  return { reviewCount, selfGap, nextGap, hasNext };
 }
 
 function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {

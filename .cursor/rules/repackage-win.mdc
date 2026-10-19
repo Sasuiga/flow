@@ -1,0 +1,19 @@
+---
+description: 改完可运行代码后更新用户正在用的 Windows 绿色包
+alwaysApply: true
+---
+
+# 改完更新绿色包
+
+用户用 `F:\Project\flow\flow-win-x64-0.2.0` 里的 `start.bat` 打开应用。只改源码、不更新这个目录时，刷新浏览器看不到变化。
+
+影响服务端、前端或共享类型的改动完成后，在同一轮里更新这个目录，不要另打一份 zip，也不要动 `data/`、`node/`、`node_modules/`、`start.bat`。
+
+1. 在 `apps/server` 执行 `node build.mjs`，得到 `apps/server/dist/main.js`。
+2. 在仓库根执行 `pnpm --filter flow-web build`，得到 `apps/web/dist`。
+3. 用新的 `main.js` 覆盖绿色包根目录的 `main.js`。
+4. 删掉绿色包里的 `web/`，再把 `apps/web/dist` 整份复制进去。
+5. 结束正在监听 4120 的旧进程，在绿色包目录里按 `start.bat` 的方式重新拉起 `node\node.exe main.js`（工作目录必须是绿色包根目录，数据才还在 `data/`）。
+6. 告诉用户可以直接刷新 `http://localhost:4120`。
+
+纯文档、规则或与运行无关的改动不用打包。

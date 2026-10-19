@@ -1,4 +1,4 @@
-import { Bookmark, ChevronDown, ClipboardCheck, FileSpreadsheet, Home, ScrollText, Settings, ShieldCheck, FolderOpen, Waypoints } from 'lucide-react';
+import { Bookmark, ChevronDown, FileSpreadsheet, Home, ScrollText, Settings, ShieldCheck, FolderOpen, Waypoints } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { TaskBrief } from '@flow/shared';
 
@@ -6,7 +6,6 @@ export type FlowView =
   | 'home'
   | 'tx'
   | 'flow'
-  | 'review'
   | 'watch'
   | 'report'
   | 'rules'
@@ -16,7 +15,6 @@ const TABS: { key: FlowView; label: string; icon: React.ReactNode }[] = [
   { key: 'home', label: '首页', icon: <Home size={13} strokeWidth={2} /> },
   { key: 'tx', label: '交易', icon: <ScrollText size={13} strokeWidth={2} /> },
   { key: 'flow', label: '分析', icon: <Waypoints size={13} strokeWidth={2} /> },
-  { key: 'review', label: '修正', icon: <ClipboardCheck size={13} strokeWidth={2} /> },
   { key: 'watch', label: '关注', icon: <Bookmark size={13} strokeWidth={2} /> },
   { key: 'report', label: '报表', icon: <FileSpreadsheet size={13} strokeWidth={2} /> },
   { key: 'rules', label: '规则', icon: <ShieldCheck size={13} strokeWidth={2} /> },

@@ -21,6 +21,7 @@ interface Raw {
   counterparty_account: string | null;
   bank: string | null;
   account_no: string | null;
+  holder: string | null;
   fund_use: string | null;
   category: string;
 }
@@ -40,6 +41,7 @@ function toLine(r: Raw): CategoryFocusLine {
     counterpartyAccount: text(r.counterparty_account),
     bank: text(r.bank),
     accountNo: text(r.account_no),
+    holder: text(r.holder),
     fundUse: text(r.fund_use),
   };
 }
@@ -58,9 +60,14 @@ function summarize(category: (typeof FOCUS)[number], lines: CategoryFocusLine[])
       inAmount += line.amount;
       inCount++;
     }
-    const name = line.counterparty || '（无对手方）';
-    const accountNo = line.counterpartyAccount || '';
-    const key = `${name}\n${accountNo}`;
+    const dedicated = category === '实施中置换';
+    const name = dedicated ? line.holder || line.bank || '（未识别专户）' : line.counterparty || '（无对手方）';
+    const accountNo = dedicated
+      ? line.holder
+        ? [line.bank, line.accountNo].filter(Boolean).join(' · ')
+        : line.accountNo || ''
+      : line.counterpartyAccount || '';
+    const key = dedicated ? `${line.bank ?? ''}\n${line.accountNo ?? ''}` : `${name}\n${accountNo}`;
     let party = parties.get(key);
     if (!party) {
       party = {
@@ -99,7 +106,15 @@ export function categoryFocus(taskId: number): { views: CategoryFocus[] } {
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account, t.category,
-              f.bank, f.account_no, fu.name AS fund_use
+              f.bank, f.account_no, fu.name AS fund_use,
+              (SELECT fua2.holder
+                 FROM fund_use_accounts fua2
+                WHERE fua2.project_id = tk.project_id
+                  AND fua2.account_key != ''
+                  AND fua2.account_key = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(f.account_no, ''), ' ', ''), char(9), ''), '-', ''), '　', ''))
+                  AND TRIM(fua2.holder) != ''
+                ORDER BY fua2.id
+                LIMIT 1) AS holder
        FROM transactions t
        JOIN files f ON f.id = t.file_id
        JOIN tasks tk ON tk.id = f.task_id

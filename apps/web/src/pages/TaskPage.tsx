@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BankFile, FileStatus, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
 import { api, TaskDetail } from '../api';
 import { ListRow, ListRowHeader } from '../components/ListRow';
+import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
 import { formatDateTime } from '../lib/format';
 
@@ -28,6 +29,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [assignFile, setAssignFile] = useState<BankFile | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
@@ -129,7 +131,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       } else {
         setNotice(
           `LLM 分类完成：${r.classified}/${r.total} 笔已分类` +
-            (r.lowConfidence > 0 ? `，其中 ${r.lowConfidence} 笔置信度低，进修正队列待确认` : ''),
+            (r.lowConfidence > 0 ? `，其中 ${r.lowConfidence} 笔置信度低，可在交易页点状态修改` : ''),
         );
       }
       await load();
@@ -192,11 +194,6 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                 </span>
               ) : null}
             </div>
-            <div className="entity-bar-path">
-              <span className="path-chip" title={task.folderPath}>
-                {task.folderPath}
-              </span>
-            </div>
           </div>
           <div className="page-header-actions" style={{ marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button className="secondary-button" disabled={task.dirMissing || busy} onClick={() => void doParseAll()}>
@@ -243,7 +240,6 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>流水文件</h1>
-          <p>任务目录内的银行流水 PDF（递归扫描；.flow 与 flow-output 除外）——放入即自动登记并解析</p>
         </div>
       </div>
 
@@ -288,6 +284,11 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                     title={f.relPath}
                     menuItems={[
                       { label: '查看交易', onClick: () => onBrowseFile(f) },
+                      {
+                        label: '归入募资专户',
+                        disabled: accounts.length === 0,
+                        onClick: () => setAssignFile(f),
+                      },
                       f.status === 'done' || f.status === 'needs_review'
                         ? { label: '重新解析', onClick: () => void doParse(f) }
                         : { label: '开始解析', disabled: f.status === 'parsing', onClick: () => void doParse(f) },
@@ -297,7 +298,11 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                     <div className="file-row-cols">
                       <span className="list-row-col-title" title={f.relPath}>
                         <span className="file-name">{f.relPath}</span>
-                        {foreign ? <span className="chip chip-warning">不是募资专户</span> : null}
+                        {foreign ? (
+                          <span className="chip chip-warning" title={`解析出的账号是 ${f.accountNo}，和已登记专户对不上`}>
+                            不是募资专户
+                          </span>
+                        ) : null}
                       </span>
                       <span className="file-col-status">
                         <span className={`chip ${chip.cls}`}>
@@ -322,7 +327,95 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
         )
       ) : null}
       </section>
+      {assignFile && detail ? (
+        <AssignAccountDialog
+          file={assignFile}
+          accounts={detail.accounts ?? []}
+          busy={busy}
+          onClose={() => setAssignFile(null)}
+          onSave={async (account) => {
+            setBusy(true);
+            setError(undefined);
+            try {
+              await api.assignFileAccount(assignFile.id, {
+                bank: account.bank,
+                accountNo: account.accountNo,
+                accountName: account.holder,
+              });
+              setNotice(`已把「${assignFile.relPath}」归入 ${account.bank} ${account.accountNo}`);
+              setAssignFile(null);
+              await load();
+            } catch (e) {
+              setError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function preferredAccount(file: BankFile, accounts: ProjectAccount[]): number | null {
+  const parsed = normAccountNo(file.accountNo);
+  if (parsed.length < 4) return null;
+  const hits = accounts.filter((a) => {
+    const full = normAccountNo(a.accountNo);
+    return full !== parsed && full.endsWith(parsed);
+  });
+  return hits.length === 1 ? hits[0].id : null;
+}
+
+function AssignAccountDialog({
+  file,
+  accounts,
+  busy,
+  onClose,
+  onSave,
+}: {
+  file: BankFile;
+  accounts: ProjectAccount[];
+  busy: boolean;
+  onClose: () => void;
+  onSave: (account: ProjectAccount) => void;
+}) {
+  const [accountId, setAccountId] = useState<number | null>(() => preferredAccount(file, accounts));
+  const picked = accounts.find((a) => a.id === accountId);
+  return (
+    <Modal
+      title="归入募资专户"
+      lead={
+        file.accountNo
+          ? `这份流水现在的账号是 ${file.accountNo}。选下面已登记的专户后，按那个完整账号归入，每一笔交易不动。`
+          : '选下面已登记的专户。每一笔交易不动。'
+      }
+      onClose={onClose}
+      disableDismiss={busy}
+      width={520}
+    >
+      <div className="field">
+        {accounts.map((a) => (
+          <label key={a.id} className={`radio-row${accountId === a.id ? ' active' : ''}`}>
+            <input type="radio" name="assign-account" checked={accountId === a.id} onChange={() => setAccountId(a.id)} />
+            <span className="radio-row-label">
+              {a.holder || '未填户名'}
+              <span className="radio-row-hint">
+                {a.bank} · {a.accountNo}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button className="secondary-button" onClick={onClose} disabled={busy}>
+          取消
+        </button>
+        <button className="primary-button" disabled={busy || !picked} onClick={() => picked && onSave(picked)}>
+          {busy ? '保存中…' : '归入'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

@@ -363,9 +363,12 @@ export interface CashLotLine {
  * 一笔现金管理。购买和赎回按同一账户、金额和日期配对，不是银行存单号。
  * 购买不在本期时 purchaseMissing 为真。还没赎回时 open 为真。
  * 收益没单独入账、又减不出本金时 interestUnknown 为真。
+ * 用户手填本金和利息后 manualSplit 为真，期末余额和利息合计按手填数计算。
  */
 export interface CashLot {
   id: string;
+  /** 账户主体，来自募资专户登记 */
+  holder?: string;
   bank?: string;
   accountNo?: string;
   fundUse?: string;
@@ -377,6 +380,8 @@ export interface CashLot {
   open: boolean;
   interest?: number;
   interestUnknown: boolean;
+  /** 本息写在同一笔，用户已手填本金和利息 */
+  manualSplit: boolean;
   /** 同一金额有多笔、购买日不同，按先买先赎配上的 */
   ambiguous: boolean;
   /** 只有收益、没有配上的本金 */
@@ -386,10 +391,12 @@ export interface CashLot {
 
 export interface CashLotReport {
   rows: CashLot[];
-  /** 本期购买、尚未赎回的本金 */
+  /** 期末未赎回：本期购买尚未赎回 + 上期购买尚未赎回 */
   ending: number;
-  /** 已经能分开的利息 */
+  /** 已经能分开的利息，含上期购买、本期赎回且能拆开的收益 */
   interest: number;
+  /** 上期末余额扣掉本期已赎回的上期本金。期末未赎回已含这笔合计 */
+  priorOpen: number;
 }
 
 /** 融资项目上手工登记的募资专户。募投项目是挂上去的，不存在流水里。 */
@@ -571,6 +578,8 @@ export interface CategoryFocusLine {
   counterpartyAccount?: string;
   bank?: string;
   accountNo?: string;
+  /** 募资专户的账户主体 */
+  holder?: string;
   fundUse?: string;
 }
 

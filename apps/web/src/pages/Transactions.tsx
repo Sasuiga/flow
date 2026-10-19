@@ -18,6 +18,39 @@ const STATUS_CHIP: Record<string, { cls: string; label: string }> = {
   fixed: { cls: 'chip-success', label: '已修正' },
 };
 
+type TxDraft = {
+  date: string;
+  direction: 'in' | 'out';
+  amount: string;
+  balance: string;
+  summary: string;
+  counterparty: string;
+};
+
+function balanceRecalcText(b: { selfGap: string | null; nextGap: string | null; hasNext: boolean }): string {
+  const self =
+    b.selfGap == null ? '本笔缺少余额，未测算' : b.selfGap === '' ? '本笔与上一笔衔接' : `本笔${b.selfGap}`;
+  const next = !b.hasNext
+    ? '后面没有下一笔'
+    : b.nextGap == null
+      ? '下一笔缺少余额，未测算'
+      : b.nextGap === ''
+        ? '下一笔与本笔衔接'
+        : `下一笔${b.nextGap}`;
+  return `前后余额已复算：${self}；${next}`;
+}
+
+function draftOf(r: TxRow): TxDraft {
+  return {
+    date: r.date ?? '',
+    direction: r.direction,
+    amount: String(r.amount),
+    balance: r.balance == null ? '' : String(r.balance),
+    summary: r.summary ?? '',
+    counterparty: r.counterparty ?? '',
+  };
+}
+
 function fmtAmount(n: number | undefined, unit: MoneyUnit): string {
   return n == null ? '—' : formatByUnit(n, unit);
 }
@@ -46,6 +79,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [bulkCat, setBulkCat] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [expandedKeys, setExpandedKeys] = useState<number[]>([]);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<TxDraft | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
   const seq = useRef(0);
 
   useEffect(() => {
@@ -205,6 +242,54 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       );
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  function openEdit(r: TxRow) {
+    setEditingId(r.id);
+    setDraft(draftOf(r));
+    setExpandedKeys((keys) => (keys.includes(r.id) ? keys : [...keys, r.id]));
+    setError(undefined);
+    setNotice(undefined);
+  }
+
+  async function saveEdit(id: number) {
+    if (!draft || editBusy) return;
+    const amount = Number(draft.amount.replace(/,/g, ''));
+    const balance = draft.balance.trim() === '' ? null : Number(draft.balance.replace(/,/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('金额需为大于 0 的数字，单位是元');
+      return;
+    }
+    if (balance != null && !Number.isFinite(balance)) {
+      setError('余额需为数字，或留空。单位是元');
+      return;
+    }
+    setEditBusy(true);
+    setError(undefined);
+    try {
+      const res = await api.patchTransaction(id, {
+        date: draft.date,
+        summary: draft.summary,
+        amount,
+        direction: draft.direction,
+        balance,
+        counterparty: draft.counterparty,
+      });
+      const other = (res.row.reviewNote ?? '')
+        .split('；')
+        .map((s) => s.trim())
+        .filter((s) => s && !s.startsWith('余额断裂'))
+        .join('；');
+      const balanceText = res.balance ? balanceRecalcText(res.balance) : '';
+      setNotice(['已保存', balanceText, other ? `复核：${other}` : ''].filter(Boolean).join('。'));
+      setEditingId(null);
+      setDraft(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -377,8 +462,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       {data ? (
         <div className="tx-summary">
           <span>共 {data.total.toLocaleString()} 笔</span>
-          <span className="tx-summary-in">流入 {data.inflow.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</span>
-          <span className="tx-summary-out">流出 {data.outflow.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}</span>
+          <span className="tx-summary-in">流入 {formatByUnit(data.inflow, unit)}</span>
+          <span className="tx-summary-out">流出 {formatByUnit(data.outflow, unit)}</span>
           <span className="tx-summary-page">
             第 {query.page} 页 · 每页 {query.pageSize} 笔
           </span>
@@ -416,7 +501,27 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           }}
           expandable={{
             rowExpandable: () => true,
-            expandedRowRender: (r: TxRow) => <TxDetailRow r={r} />,
+            expandedRowKeys: expandedKeys,
+            onExpand: (expanded: boolean, r: TxRow) => {
+              setExpandedKeys((keys) => (expanded ? [...keys, r.id] : keys.filter((id) => id !== r.id)));
+              if (!expanded && editingId === r.id) {
+                setEditingId(null);
+                setDraft(null);
+              }
+            },
+            expandedRowRender: (r: TxRow) => (
+              <TxDetailRow
+                r={r}
+                draft={editingId === r.id ? draft : null}
+                busy={editBusy}
+                onChange={setDraft}
+                onSave={() => void saveEdit(r.id)}
+                onCancel={() => {
+                  setEditingId(null);
+                  setDraft(null);
+                }}
+              />
+            ),
           }}
           columns={[
             {
@@ -536,13 +641,15 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (_: unknown, r: TxRow) => {
                 const chip = STATUS_CHIP[r.status] ?? { cls: 'chip-muted', label: r.status };
                 return (
-                  <span
-                    className={`chip ${chip.cls}`}
-                    title={r.reviewNote || (r.confidence < 0.99 ? `置信度 ${(r.confidence * 100).toFixed(0)}%` : undefined)}
+                  <button
+                    type="button"
+                    className={`chip tx-status ${chip.cls}`}
+                    title="修改这条流水的日期、金额、余额和摘要。正常的也可以改"
+                    onClick={() => openEdit(r)}
                   >
                     {chip.label}
                     {r.confidence < 0.99 ? ` ${(r.confidence * 100).toFixed(0)}%` : ''}
-                  </span>
+                  </button>
                 );
               },
             },
@@ -588,10 +695,48 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   );
 }
 
-/** 展开行：原始文本 + 定位（页/行号）+ 上下文 */
-function TxDetailRow({ r }: { r: TxRow }) {
+/** 展开行：可改这条流水，并看原始文本 */
+function TxDetailRow({
+  r,
+  draft,
+  busy,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  r: TxRow;
+  draft: TxDraft | null;
+  busy: boolean;
+  onChange: (draft: TxDraft) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
   return (
     <div className="tx-detail">
+      {draft ? (
+        <div className="review-form tx-edit">
+          <input className="input" type="date" aria-label="日期" value={draft.date} onChange={(e) => onChange({ ...draft, date: e.target.value })} />
+          <select
+            className="input"
+            aria-label="方向"
+            value={draft.direction}
+            onChange={(e) => onChange({ ...draft, direction: e.target.value as 'in' | 'out' })}
+          >
+            <option value="out">支出</option>
+            <option value="in">收入</option>
+          </select>
+          <input className="input" aria-label="金额（元）" value={draft.amount} onChange={(e) => onChange({ ...draft, amount: e.target.value })} placeholder="金额（元）" />
+          <input className="input" aria-label="余额（元）" value={draft.balance} onChange={(e) => onChange({ ...draft, balance: e.target.value })} placeholder="余额（元），可空" />
+          <input className="input wide" aria-label="摘要" value={draft.summary} onChange={(e) => onChange({ ...draft, summary: e.target.value })} placeholder="摘要" />
+          <input className="input wide" aria-label="对手方" value={draft.counterparty} onChange={(e) => onChange({ ...draft, counterparty: e.target.value })} placeholder="对手方" />
+          <button className="primary-button" disabled={busy} onClick={onSave}>
+            {busy ? '保存中…' : '保存'}
+          </button>
+          <button className="secondary-button" disabled={busy} onClick={onCancel}>
+            取消
+          </button>
+        </div>
+      ) : null}
       {r.reviewNote ? <div className="tx-detail-review">复核：{r.reviewNote}</div> : null}
       <div className="tx-detail-meta">
         <span>

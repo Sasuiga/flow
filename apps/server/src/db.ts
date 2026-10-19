@@ -160,6 +160,13 @@ CREATE TABLE IF NOT EXISTS cash_board (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cash_board_task ON cash_board(task_id, start_date);
+-- 现金管理赎回本息写在同一笔时，用户手填的本金和利息。不改交易金额。
+CREATE TABLE IF NOT EXISTS cash_lot_split (
+  transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+  principal REAL NOT NULL,
+  interest REAL NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 /* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */

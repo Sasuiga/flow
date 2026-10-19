@@ -5,10 +5,12 @@
  * 1. 金额相同，且购买日不晚于赎回日，按日期和流水顺序一一对应。
  * 2. 赎回大于尚未配对的购买、差额不超过购买金额的 15%，差额记为利息，优先差额更小的那笔购买。
  * 3. 收益单独入账时，只在同一天、产品代码一致、笔数也一致时按顺序挂上。笔数对不上就不挂，避免把一笔利息安到错误的本金上。
- * 购买不在本期流水里的，不拿别的账户或其他金额去凑。收益没单独入账、又减不出本金的，利息留空。
- * 活期「利息」不是现金管理收益，不进这张表。
+ * 购买不在本期流水里的，不拿别的账户或其他金额去凑。收益没单独入账、又减不出本金的，利息留空，整笔赎回从余额中减掉；用户手填本金和利息后，按本金减余额、按利息计入合计。
+ * 期末未赎回 = 上期末余额 − 本期赎回的上期本金 + 本期购买尚未赎回。上期尚未赎回只给合计，不拆成单笔。
+ * 上期购买、本期赎回、且收益已经能分开的，计入利息合计。活期「利息」不是现金管理收益，不进这张表。
  */
 import { CashLot, CashLotLine, CashLotReport } from '@flow/shared';
+import { getCashMandate } from './cashMandate.js';
 import { db } from './db.js';
 
 const YIELD_CAP = 0.15;
@@ -24,6 +26,7 @@ interface Raw {
   category: string;
   bank?: string;
   accountNo?: string;
+  holder?: string;
   fundUse?: string;
 }
 
@@ -211,6 +214,7 @@ function toLot(work: Work, index: number): CashLot {
     id: `${anchor?.id ?? index}`,
     bank: anchor?.bank,
     accountNo: anchor?.accountNo,
+    holder: work.purchase?.holder || work.redemption?.holder || work.interests[0]?.holder,
     fundUse: work.purchase?.fundUse || work.redemption?.fundUse || work.interests[0]?.fundUse,
     purchaseAmount,
     purchaseDate: work.purchase?.date,
@@ -220,6 +224,7 @@ function toLot(work: Work, index: number): CashLot {
     open: !!work.purchase && !work.redemption,
     interest,
     interestUnknown,
+    manualSplit: false,
     ambiguous: work.ambiguous,
     interestOnly,
     lines,
@@ -246,7 +251,58 @@ export function pairCashLots(rows: Raw[]): CashLotReport {
     rows: lots,
     ending: cents(lots.reduce((sum, lot) => sum + (lot.open ? lot.purchaseAmount ?? 0 : 0), 0)),
     interest: cents(lots.reduce((sum, lot) => sum + (lot.interest ?? 0), 0)),
+    priorOpen: 0,
   };
+}
+
+/** 上期赎回的本金。能分开或用户手填时用本金；本息仍未分开时按整笔赎回计。 */
+function priorRedeemedPrincipal(lots: CashLot[]): number {
+  return lots.reduce((sum, lot) => {
+    if (!lot.purchaseMissing || lot.redemptionAmount == null) return sum;
+    return sum + (lot.purchaseAmount ?? lot.redemptionAmount);
+  }, 0);
+}
+
+function withOpening(report: CashLotReport, opening: number): CashLotReport {
+  const priorOpen = cents(opening - priorRedeemedPrincipal(report.rows));
+  return {
+    ...report,
+    priorOpen,
+    ending: cents(report.ending + priorOpen),
+  };
+}
+
+function redemptionId(lot: CashLot): number | undefined {
+  return lot.lines.find((line) => line.role === 'redemption')?.id;
+}
+
+function applySplits(lots: CashLot[], splits: Map<number, { principal: number; interest: number }>): CashLot[] {
+  return lots.map((lot) => {
+    if (!lot.interestUnknown) return lot;
+    const id = redemptionId(lot);
+    const split = id == null ? undefined : splits.get(id);
+    if (!split) return lot;
+    return {
+      ...lot,
+      purchaseAmount: split.principal,
+      interest: split.interest,
+      interestUnknown: false,
+      manualSplit: true,
+    };
+  });
+}
+
+function loadSplits(taskId: number): Map<number, { principal: number; interest: number }> {
+  const rows = db
+    .prepare(
+      `SELECT s.transaction_id, s.principal, s.interest
+         FROM cash_lot_split s
+         JOIN transactions t ON t.id = s.transaction_id
+         JOIN files f ON f.id = t.file_id
+        WHERE f.task_id = ?`,
+    )
+    .all(taskId) as { transaction_id: number; principal: number; interest: number }[];
+  return new Map(rows.map((row) => [Number(row.transaction_id), { principal: Number(row.principal) || 0, interest: Number(row.interest) || 0 }]));
 }
 
 export function cashLots(taskId: number): CashLotReport | null {
@@ -256,7 +312,7 @@ export function cashLots(taskId: number): CashLotReport | null {
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account, t.category,
-              f.bank, f.account_no,
+              f.bank, f.account_no, f.account_name,
               (SELECT fu.name
                  FROM fund_use_accounts fua
                  JOIN fund_uses fu ON fu.id = fua.fund_use_id
@@ -264,14 +320,22 @@ export function cashLots(taskId: number): CashLotReport | null {
                   AND fua.account_key != ''
                   AND fua.account_key = ${accountKeySql}
                 ORDER BY fu.id
-                LIMIT 1) AS fund_use
+                LIMIT 1) AS fund_use,
+              (SELECT fua.holder
+                 FROM fund_use_accounts fua
+                WHERE fua.project_id = ?
+                  AND fua.account_key != ''
+                  AND fua.account_key = ${accountKeySql}
+                  AND TRIM(fua.holder) != ''
+                ORDER BY fua.id
+                LIMIT 1) AS holder
          FROM transactions t
          JOIN files f ON f.id = t.file_id
         WHERE f.task_id = ?
           AND t.category IN ('现金管理', '现金管理投资收益')
         ORDER BY t.date IS NULL, t.date, t.id`,
     )
-    .all(task.project_id, taskId) as {
+    .all(task.project_id, task.project_id, taskId) as {
     id: number;
     date: string | null;
     amount: number;
@@ -282,14 +346,17 @@ export function cashLots(taskId: number): CashLotReport | null {
     category: string;
     bank: string | null;
     account_no: string | null;
+    account_name: string | null;
     fund_use: string | null;
+    holder: string | null;
   }[];
   const text = (value: string | null) => {
     const trimmed = (value ?? '').trim();
     return trimmed || undefined;
   };
-  return pairCashLots(
-    rows.map((row) => ({
+  const mandate = getCashMandate(taskId);
+  const asOf = mandate?.openingAsOf ?? '';
+  const mapped = rows.map((row) => ({
       id: Number(row.id),
       date: (row.date ?? '').slice(0, 10) || undefined,
       amount: Number(row.amount) || 0,
@@ -300,7 +367,48 @@ export function cashLots(taskId: number): CashLotReport | null {
       category: row.category,
       bank: text(row.bank),
       accountNo: text(row.account_no),
+      holder: text(row.holder) || text(row.account_name),
       fundUse: text(row.fund_use),
-    })),
-  );
+    }));
+  const period = asOf ? mapped.filter((row) => !row.date || row.date > asOf) : mapped;
+  const paired = pairCashLots(period);
+  paired.rows = applySplits(paired.rows, loadSplits(taskId));
+  paired.interest = cents(paired.rows.reduce((sum, lot) => sum + (lot.interest ?? 0), 0));
+  return withOpening(paired, mandate?.opening ?? 0);
+}
+
+export function saveCashSplit(
+  taskId: number,
+  txId: number,
+  body: { principal?: unknown; interest?: unknown },
+): { report: CashLotReport } | { error: string } {
+  const current = cashLots(taskId);
+  if (!current) return { error: '任务不存在' };
+  const lot = current.rows.find((row) => redemptionId(row) === txId);
+  if (!lot || lot.redemptionAmount == null || (!lot.interestUnknown && !lot.manualSplit)) {
+    return { error: '这笔赎回已经能分开，不用手填' };
+  }
+  const blank = (value: unknown) => value == null || (typeof value === 'string' && value.trim() === '');
+  if (blank(body.principal) && blank(body.interest)) {
+    db.prepare('DELETE FROM cash_lot_split WHERE transaction_id = ?').run(txId);
+    const report = cashLots(taskId);
+    return report ? { report } : { error: '任务不存在' };
+  }
+  const principal = Number(body.principal);
+  const interest = Number(body.interest);
+  if (!Number.isFinite(principal) || !Number.isFinite(interest) || principal < 0 || interest < 0) {
+    return { error: '本金和利息需为大于等于 0 的数字' };
+  }
+  if (Math.abs(cents(principal + interest) - lot.redemptionAmount) > 0.02) {
+    return { error: '本金加利息需要等于赎回金额' };
+  }
+  db.prepare(
+    `INSERT INTO cash_lot_split(transaction_id, principal, interest, updated_at) VALUES(?,?,?,?)
+     ON CONFLICT(transaction_id) DO UPDATE SET
+       principal = excluded.principal,
+       interest = excluded.interest,
+       updated_at = excluded.updated_at`,
+  ).run(txId, cents(principal), cents(interest), new Date().toISOString());
+  const report = cashLots(taskId);
+  return report ? { report } : { error: '任务不存在' };
 }

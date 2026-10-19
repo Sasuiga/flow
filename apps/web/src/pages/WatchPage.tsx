@@ -27,7 +27,7 @@ function logTime(iso: string): string {
  * 关注页：只列交易页仍标记着的流水。
  * 记录和判定追加进日志，不改交易字段，也不取消交易页上的标记。
  */
-export default function WatchPage({ taskId, taskName }: { taskId?: number; taskName?: string }) {
+export default function WatchPage({ taskId }: { taskId?: number; taskName?: string }) {
   const [items, setItems] = useState<WatchItem[]>([]);
   const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const [drafts, setDrafts] = useState<Record<number, string>>({});
@@ -85,10 +85,6 @@ export default function WatchPage({ taskId, taskName }: { taskId?: number; taskN
       <div className="page-header">
         <div>
           <h1>关注</h1>
-          <p>
-            {taskName ? `当前任务「${taskName}」。` : ''}
-            标记只在交易页打上或取消。这里记下的内容和判定会留在记录里，不会改掉交易页上的标记，也不会改交易本身。
-          </p>
         </div>
         <MoneyUnitSelect value={unit} onChange={setUnit} />
       </div>

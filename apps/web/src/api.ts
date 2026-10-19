@@ -132,6 +132,8 @@ export const api = {
   categoryFocus: (id: number) => j<{ views: CategoryFocus[] }>(`/api/tasks/${id}/category-focus`),
   dedicatedBalances: (id: number) => j<{ rows: DedicatedBalance[] }>(`/api/tasks/${id}/dedicated-balances`),
   cashLots: (id: number) => j<CashLotReport>(`/api/tasks/${id}/cash-lots`),
+  saveCashSplit: (taskId: number, txId: number, body: { principal: number | null; interest: number | null }) =>
+    j<CashLotReport>(`/api/tasks/${taskId}/cash-lots/${txId}/split`, { method: 'PUT', body: JSON.stringify(body) }),
   cashMandate: (id: number) => j<CashMandate>(`/api/tasks/${id}/cash-mandate`),
   saveCashMandate: (id: number, body: { opening: number; openingAsOf: string; boards: { startDate: string; endDate: string; limitAmount: number; note: string }[] }) =>
     j<CashMandate>(`/api/tasks/${id}/cash-mandate`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -151,6 +153,9 @@ export const api = {
   parseTask: (taskId: number) =>
     j<{ ok: boolean; added: number; queued: number }>(`/api/files/task/${taskId}/parse`, { method: 'POST' }),
   deleteFile: (id: number) => j<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' }),
+  /** 把这份流水归到某个已登记募资专户。只改文件上的银行、账号、户名 */
+  assignFileAccount: (id: number, body: { bank: string; accountNo: string; accountName: string }) =>
+    j<{ ok: boolean }>(`/api/files/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   listTransactions: (q: TxQuery) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v));
@@ -180,7 +185,11 @@ export const api = {
       category?: string | null;
     },
   ) =>
-    j<{ row: TxRow; reviewCount: number }>(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    j<{
+      row: TxRow;
+      reviewCount: number;
+      balance?: { selfGap: string | null; nextGap: string | null; hasNext: boolean };
+    }>(`/api/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   setWatch: (id: number, marked: boolean) =>
     j<{ watched: boolean }>(`/api/watch/${id}/mark`, { method: 'POST', body: JSON.stringify({ marked }) }),
   watchList: (taskId?: number) =>

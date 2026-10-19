@@ -558,6 +558,11 @@ select.input {
   font-size: 12px;
 }
 
+.radio-row-label .radio-row-hint {
+  display: block;
+  font-weight: 400;
+}
+
 /* ---------- 弹窗（Avalon modal-backdrop + modal-dialog） ---------- */
 
 .modal-backdrop {
@@ -1688,6 +1693,20 @@ select.input {
   width: 140px;
 }
 
+.review-form .input.wide {
+  width: 220px;
+}
+
+button.tx-status {
+  cursor: pointer;
+  font: inherit;
+  appearance: none;
+}
+
+button.tx-status:hover {
+  filter: brightness(0.96);
+}
+
 .flow-note {
   margin: 4px 12px 8px;
   color: var(--ui-faint);
@@ -2123,6 +2142,28 @@ select.input {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.lot-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 16px 8px;
+}
+
+.lot-filters select.filter-control {
+  width: auto;
+  min-width: 148px;
+  max-width: 280px;
+}
+
+.report-sheet .report-split {
+  width: 112px;
+  min-height: 28px;
+  padding: 0 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .report-pending {

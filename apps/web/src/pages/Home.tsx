@@ -76,11 +76,7 @@ export function HomePage({ onOpenClient }: HomeProps) {
       <div className="page-header">
         <div>
           <h1>客户</h1>
-          <p>
-            {clients
-              ? `共 ${clients.length} 个客户 · ${totalProjects} 个融资项目`
-              : '客户 = 被核查的上市公司；其下有融资项目与报告期任务'}
-          </p>
+          {clients ? <p>共 {clients.length} 个客户 · {totalProjects} 个融资项目</p> : null}
         </div>
         <div className="page-header-actions">
           <button className="primary-button" onClick={() => setCreateOpen(true)}>

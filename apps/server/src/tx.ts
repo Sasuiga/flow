@@ -93,7 +93,7 @@ transactionsRouter.post('/bulk-category', (req, res) => {
   res.json({ updated: bulkCategory(b.ids as number[], category) });
 });
 
-/** 人工修正一行（解析字段 + M4 的改判），然后只重算该文件的复核提示 */
+/** 人工修正一行（解析字段 + M4 的改判）。保存后按印刷顺序重算该文件全部前后余额，含原先标为正常的行 */
 transactionsRouter.patch('/:id', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT id, file_id FROM transactions WHERE id = ?').get(id) as
@@ -137,9 +137,13 @@ transactionsRouter.patch('/:id', (req, res) => {
       return res.status(404).json({ error: '交易不存在' });
     }
   }
-  const reviewCount = recomputeFileBalanceReviews(existing.file_id, id);
+  const balance = recomputeFileBalanceReviews(existing.file_id, id);
   const updated = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id) as Record<string, unknown>;
-  res.json({ row: toTxRow(updated), reviewCount });
+  res.json({
+    row: toTxRow(updated),
+    reviewCount: balance.reviewCount,
+    balance: { selfGap: balance.selfGap, nextGap: balance.nextGap, hasNext: balance.hasNext },
+  });
 });
 
 transactionsRouter.get('/', (req, res) => {
@@ -334,6 +338,26 @@ filesRouter.post('/task/:taskId/parse', (req, res) => {
     if (parseQueue.enqueue(r.id)) queued++;
   }
   res.json({ ok: true, added, queued });
+});
+
+/** 把这份流水的本方账号改成已登记的募资专户。只改文件上的银行、账号、户名，不动每一笔交易。 */
+filesRouter.patch('/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT id FROM files WHERE id = ?').get(id) as { id: number } | undefined;
+  if (!existing) return res.status(404).json({ error: '文件不存在' });
+  const b = (req.body ?? {}) as { bank?: string; accountNo?: string; accountName?: string };
+  const accountNo = String(b.accountNo ?? '').replace(/[\s\u3000\-]/g, '').toUpperCase();
+  if (!accountNo) return res.status(400).json({ error: '账号不能为空' });
+  const bank = String(b.bank ?? '').trim() || null;
+  const accountName = String(b.accountName ?? '').trim() || null;
+  db.prepare('UPDATE files SET bank = ?, account_no = ?, account_name = ?, updated_at = ? WHERE id = ?').run(
+    bank,
+    accountNo,
+    accountName,
+    new Date().toISOString(),
+    id,
+  );
+  res.json({ ok: true, bank, accountNo, accountName });
 });
 
 /** 删除文件登记（其交易/命中级联删除；磁盘 PDF 不动，可重扫恢复） */

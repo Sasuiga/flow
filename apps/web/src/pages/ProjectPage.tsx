@@ -252,7 +252,6 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         <div className="page-header" style={{ marginBottom: 12 }}>
           <div>
             <h1 style={{ fontSize: 18, marginBottom: 2 }}>报告期任务</h1>
-            <p>一个报告期/一类分析一个任务；流水 PDF 放任务目录，报告输出到任务目录 flow-output/</p>
           </div>
           <div className="page-header-actions">
             <button className="primary-button" disabled={!project} onClick={() => setCreateOpen(true)}>
