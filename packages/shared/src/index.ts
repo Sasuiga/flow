@@ -272,6 +272,8 @@ export interface TxQuery {
   taskId?: number;
   fileId?: number;
   bank?: string;
+  /** 开户主体，与列表展示的名称一致 */
+  holder?: string;
   accountNo?: string;
   /** 募投项目。数字 id，或 '__none__' 表示未归集 */
   fundUse?: string;
@@ -302,6 +304,8 @@ export interface TxOptions {
   /** 有账号尚未归集到募投项目 */
   hasUnassignedFundUse: boolean;
   banks: string[];
+  /** 当前任务里出现过的开户主体 */
+  holders: string[];
   accounts: string[];
   categories: string[];
 }

@@ -118,6 +118,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       taskId: query.taskId,
       fileId: query.fileId,
       bank: query.bank,
+      holder: query.holder,
       accountNo: query.accountNo,
       from: query.from,
       to: query.to,
@@ -137,6 +138,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           let changed = false;
           if (q.bank && !opts.banks.includes(q.bank)) {
             next.bank = undefined;
+            changed = true;
+          }
+          if (q.holder && !opts.holders.includes(q.holder)) {
+            next.holder = undefined;
             changed = true;
           }
           if (q.accountNo && !opts.accounts.includes(q.accountNo)) {
@@ -167,6 +172,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     query.taskId,
     query.fileId,
     query.bank,
+    query.holder,
     query.accountNo,
     query.from,
     query.to,
@@ -203,6 +209,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       taskId,
       fileId: undefined,
       bank: initialBank,
+      holder: undefined,
       accountNo: initialAccountNo,
       page: 1,
     }));
@@ -332,7 +339,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   }
 
   const activeFilterCount = [
-    query.bank, query.accountNo, query.fundUse, query.from, query.to,
+    query.bank, query.holder, query.accountNo, query.fundUse, query.from, query.to,
     query.counterparty, query.status, query.category,
   ].filter((v) => v !== undefined && v !== '').length;
 
@@ -518,6 +525,22 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               {options.fundUses.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input filter-control"
+              title={query.holder || '全部开户主体'}
+              value={query.holder ?? ''}
+              onChange={(e) => {
+                const holder = e.target.value || undefined;
+                patch(holder ? { holder, accountNo: undefined } : { holder: undefined });
+              }}
+            >
+              <option value="">全部开户主体</option>
+              {options.holders.map((h) => (
+                <option key={h} value={h}>
+                  {h}
                 </option>
               ))}
             </select>

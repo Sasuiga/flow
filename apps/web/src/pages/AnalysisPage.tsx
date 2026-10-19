@@ -362,7 +362,15 @@ function Sparkline({
 }
 
 function FlowTables({ result }: { result: FlowResult }) {
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  function toggle(id: string) {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   const [dedicatedUnit, setDedicatedUnit] = useState<MoneyUnit>('yuan');
   const [ownUnit, setOwnUnit] = useState<MoneyUnit>('yuan');
   const byId = new Map(result.nodes.map((n) => [n.id, n]));
@@ -392,11 +400,11 @@ function FlowTables({ result }: { result: FlowResult }) {
             </thead>
             <tbody>
               {dedicated.map((l) => {
-                const opened = open === l.id;
+                const opened = open.has(l.id);
                 const lines = [...(l.lines ?? [])].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || a.id - b.id);
                 return (
                   <Fragment key={l.id}>
-                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => setOpen(opened ? null : l.id)}>
+                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => toggle(l.id)}>
                       <td>{nodeName(byId.get(l.from))}</td>
                       <td>{nodeName(byId.get(l.to))}</td>
                       <td>{l.outAmount ? `${formatByUnit(l.outAmount, dedicatedUnit)} · ${l.outCount} 笔` : '—'}</td>
@@ -449,11 +457,11 @@ function FlowTables({ result }: { result: FlowResult }) {
                 const inn = l.from.startsWith('acct:') ? l.inAmount : l.outAmount;
                 const outN = l.from.startsWith('acct:') ? l.outCount : l.inCount;
                 const inN = l.from.startsWith('acct:') ? l.inCount : l.outCount;
-                const opened = open === l.id;
+                const opened = open.has(l.id);
                 const lines = [...(l.lines ?? [])].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || a.id - b.id);
                 return (
                   <Fragment key={l.id}>
-                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => setOpen(opened ? null : l.id)}>
+                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => toggle(l.id)}>
                       <td>{nodeName(acct)}</td>
                       <td>
                         {other?.title}

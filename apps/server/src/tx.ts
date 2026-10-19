@@ -61,13 +61,16 @@ LEFT JOIN fund_use_accounts fua
 LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
 LEFT JOIN tx_watch w ON w.transaction_id = t.id`;
 
+/** 与交易列表「开户主体」列相同：登记的账户主体优先，否则用流水上的户名 */
+const HOLDER_SQL = `COALESCE(NULLIF(TRIM(fua.holder), ''), NULLIF(TRIM(f.account_name), ''))`;
+
 export const BASE_SELECT = `
 SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
        t.counterparty, t.counterparty_account, t.channel, t.category, t.category_src,
        t.risk_flags, t.confidence, t.review_note, t.raw_text, t.status,
        COALESCE(w.marked, 0) AS watched,
        f.rel_path AS file_name, f.bank, f.account_no,
-       COALESCE(NULLIF(TRIM(fua.holder), ''), NULLIF(TRIM(f.account_name), '')) AS holder,
+       ${HOLDER_SQL} AS holder,
        fu.id AS fund_use_id, fu.name AS fund_use_name,
        tk.name AS task_name, p.name AS project_name, c.name AS client_name
 ${TX_FROM}`;
@@ -232,7 +235,16 @@ transactionsRouter.get('/options', (req, res) => {
       .all(...bankWhere.args) as { bank: string }[]
   ).map((r) => r.bank);
 
-  const accountWhere = buildWhere({ ...scope, bank: q.bank, fundUse: q.fundUse });
+  const holderWhere = buildWhere({ ...scope, bank: q.bank, fundUse: q.fundUse });
+  const holders = (
+    db
+      .prepare(
+        `SELECT DISTINCT ${HOLDER_SQL} AS holder ${from}${andWhere(holderWhere.whereSql, `${HOLDER_SQL} IS NOT NULL`)} ORDER BY holder`,
+      )
+      .all(...holderWhere.args) as { holder: string }[]
+  ).map((r) => r.holder);
+
+  const accountWhere = buildWhere({ ...scope, bank: q.bank, fundUse: q.fundUse, holder: q.holder });
   const accounts = (
     db
       .prepare(
@@ -264,7 +276,7 @@ transactionsRouter.get('/options', (req, res) => {
     )
     .get(...useWhere.args);
 
-  const options: TxOptions = { tasks, banks, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned };
+  const options: TxOptions = { tasks, banks, holders, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned };
   res.json(options);
 });
 
@@ -288,6 +300,10 @@ function buildWhere(
   if (has('bank')) {
     where.push('f.bank = ?');
     args.push(q.bank!);
+  }
+  if (has('holder')) {
+    where.push(`${HOLDER_SQL} = ?`);
+    args.push(q.holder!);
   }
   if (has('accountNo')) {
     where.push('f.account_no LIKE ?');
