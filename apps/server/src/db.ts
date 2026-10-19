@@ -171,6 +171,20 @@ CREATE TABLE IF NOT EXISTS cash_lot_split (
 
 /* ---------- M1 兼容迁移（旧库：projects 无 client_id/status，files 挂 project_id） ---------- */
 
+if (!tableCols('tx_watch').includes('memo')) {
+  db.exec(`ALTER TABLE tx_watch ADD COLUMN memo TEXT NOT NULL DEFAULT ''`);
+  const notes = db
+    .prepare(`SELECT transaction_id, body FROM tx_watch_log WHERE kind = 'note' ORDER BY id`)
+    .all() as { transaction_id: number; body: string }[];
+  const grouped = new Map<number, string[]>();
+  for (const note of notes) {
+    const list = grouped.get(note.transaction_id) ?? [];
+    list.push(note.body);
+    grouped.set(note.transaction_id, list);
+  }
+  const writeMemo = db.prepare(`UPDATE tx_watch SET memo = ? WHERE transaction_id = ? AND memo = ''`);
+  for (const [id, bodies] of grouped) writeMemo.run(bodies.join('\n'), id);
+}
 if (!tableCols('transactions').includes('review_note')) {
   db.exec('ALTER TABLE transactions ADD COLUMN review_note TEXT');
 }

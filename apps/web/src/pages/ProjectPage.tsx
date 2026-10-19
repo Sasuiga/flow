@@ -410,6 +410,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <ListRowHeader
                 withMenu
                 cols={[
+                  { label: '序号', cls: 'acct-col-seq' },
                   { label: '账户主体', cls: 'acct-col-holder' },
                   { label: '开户行', cls: 'acct-col-bank' },
                   { label: '账号', cls: 'acct-col-no' },
@@ -417,7 +418,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                   { label: '募投项目', cls: 'acct-col-use' },
                 ]}
               />
-              {detail.accounts.map((a) => (
+              {detail.accounts.map((a, i) => (
                 <ListRow
                   key={a.id}
                   title={a.holder}
@@ -427,6 +428,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                     { label: '删除', danger: true, onClick: () => void removeAccount(a) },
                   ]}
                 >
+                  <span className="acct-col-seq">{i + 1}</span>
                   <span className="acct-col-holder" title={a.holder}>{a.holder}</span>
                   <span className="acct-col-bank" title={a.bank}>{a.bank}</span>
                   <span className="acct-col-no" title={a.accountNo}>{a.accountNo}</span>

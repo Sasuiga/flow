@@ -391,20 +391,33 @@ function FlowTables({ result }: { result: FlowResult }) {
               </tr>
             </thead>
             <tbody>
-              {dedicated.map((l) => (
-                <tr key={l.id}>
-                  <td>{nodeName(byId.get(l.from))}</td>
-                  <td>{nodeName(byId.get(l.to))}</td>
-                  <td>{l.outAmount ? `${formatByUnit(l.outAmount, dedicatedUnit)} · ${l.outCount} 笔` : '—'}</td>
-                  <td>{l.inAmount ? `${formatByUnit(l.inAmount, dedicatedUnit)} · ${l.inCount} 笔` : '—'}</td>
-                  <td>{netText(l.outAmount, l.inAmount, dedicatedUnit)}</td>
-                  <td>
-                    {[l.outAmount > 0 ? `支 ${checkText(l.outAmount, l.outBoth)}` : '', l.inAmount > 0 ? `收 ${checkText(l.inAmount, l.inBoth)}` : '']
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </td>
-                </tr>
-              ))}
+              {dedicated.map((l) => {
+                const opened = open === l.id;
+                const lines = [...(l.lines ?? [])].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '') || a.id - b.id);
+                return (
+                  <Fragment key={l.id}>
+                    <tr className={`hit${opened ? ' open' : ''}`} onClick={() => setOpen(opened ? null : l.id)}>
+                      <td>{nodeName(byId.get(l.from))}</td>
+                      <td>{nodeName(byId.get(l.to))}</td>
+                      <td>{l.outAmount ? `${formatByUnit(l.outAmount, dedicatedUnit)} · ${l.outCount} 笔` : '—'}</td>
+                      <td>{l.inAmount ? `${formatByUnit(l.inAmount, dedicatedUnit)} · ${l.inCount} 笔` : '—'}</td>
+                      <td>{netText(l.outAmount, l.inAmount, dedicatedUnit)}</td>
+                      <td>
+                        {[l.outAmount > 0 ? `支 ${checkText(l.outAmount, l.outBoth)}` : '', l.inAmount > 0 ? `收 ${checkText(l.inAmount, l.inBoth)}` : '']
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </td>
+                    </tr>
+                    {opened ? (
+                      <tr className="flow-lines-row">
+                        <td colSpan={6}>
+                          <LineList lines={lines} unit={dedicatedUnit} />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </section>

@@ -181,6 +181,8 @@ export const api = {
       direction: 'in' | 'out';
       balance?: number | null;
       counterparty?: string;
+      counterpartyAccount?: string;
+      channel?: string;
       /** M4 改判：显式传 null=清除 */
       category?: string | null;
     },

@@ -408,6 +408,13 @@ function acctNodeId(key: string): string {
   return `acct:${key}`;
 }
 
+function linesOf(ids: number[], rowById: Map<number, Record<string, unknown>>): FlowLine[] {
+  return ids.flatMap((id) => {
+    const row = rowById.get(id);
+    return row ? [toLine(row)] : [];
+  });
+}
+
 function toLine(r: Record<string, unknown>): FlowLine {
   return {
     id: Number(r.id),
@@ -526,7 +533,7 @@ function assemble(
       const peerId = ensureAcct(g.peerKey);
       const payer = g.direction === 'out' ? stmtId : peerId;
       const payee = g.direction === 'out' ? peerId : stmtId;
-      addFlow(payer, payee, 'dedicated', amt, g.liveCount, bothAmt, undefined, g.ids, groupCatCounts(g, rowById));
+      addFlow(payer, payee, 'dedicated', amt, g.liveCount, bothAmt, linesOf(g.ids, rowById), g.ids, groupCatCounts(g, rowById));
       continue;
     }
     if (g.kind === 'own') {
@@ -538,11 +545,7 @@ function assemble(
       }
       const payer = g.direction === 'out' ? stmtId : id;
       const payee = g.direction === 'out' ? id : stmtId;
-      const lines = g.ids.flatMap((id) => {
-        const row = rowById.get(id);
-        return row ? [toLine(row)] : [];
-      });
-      addFlow(payer, payee, 'own', amt, g.liveCount, 0, lines, g.ids, groupCatCounts(g, rowById));
+      addFlow(payer, payee, 'own', amt, g.liveCount, 0, linesOf(g.ids, rowById), g.ids, groupCatCounts(g, rowById));
       continue;
     }
     if (g.kind === 'treasury') {
@@ -780,6 +783,33 @@ function applyCurrentCategories(result: FlowResult): void {
   }
 }
 
+/** 已缓存的分析结果没有专户间划转的逐笔。按当时记下的交易 id 补上，不用重跑分析。 */
+function attachDedicatedLines(result: FlowResult) {
+  const missing = (result.links ?? []).filter((link) => link.kind === 'dedicated' && !(link.lines?.length) && link.txIds?.length);
+  if (missing.length === 0) return;
+  const ids = [...new Set(missing.flatMap((link) => link.txIds ?? []))];
+  const byId = new Map<number, FlowLine>();
+  for (let i = 0; i < ids.length; i += 400) {
+    const slice = ids.slice(i, i + 400);
+    const rows = db
+      .prepare(
+        `SELECT id, date, direction, amount, summary, counterparty, counterparty_account, balance, category
+         FROM transactions WHERE id IN (${slice.map(() => '?').join(',')})`,
+      )
+      .all(...slice) as Record<string, unknown>[];
+    for (const row of rows) {
+      const line = toLine(row);
+      byId.set(line.id, line);
+    }
+  }
+  for (const link of missing) {
+    link.lines = (link.txIds ?? []).flatMap((id) => {
+      const line = byId.get(id);
+      return line ? [line] : [];
+    });
+  }
+}
+
 function readCache(taskId: number, sig: string, legacy: string): FlowResponse | null {
   const row = db.prepare('SELECT signature, payload FROM flow_analyses WHERE task_id = ?').get(taskId) as
     | { signature: string; payload: string }
@@ -787,6 +817,7 @@ function readCache(taskId: number, sig: string, legacy: string): FlowResponse | 
   if (!row) return null;
   try {
     const result = JSON.parse(row.payload) as FlowResult;
+    attachDedicatedLines(result);
     applyCurrentCategories(result);
     if (row.signature === sig) return { status: 'ready', result };
     if (row.signature === legacy) {

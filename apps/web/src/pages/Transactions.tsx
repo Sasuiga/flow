@@ -1,8 +1,9 @@
-import { Bookmark, FilterX, Inbox } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { Bookmark, Columns2, FilterX, Inbox } from 'lucide-react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Table } from 'antd';
-import { TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
+import { BankFile, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
+import { Modal } from '../components/Modal';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 type TxPageProps = {
   /** 右上角当前任务。交易页只看这一份资料 */
@@ -25,6 +26,9 @@ type TxDraft = {
   balance: string;
   summary: string;
   counterparty: string;
+  counterpartyAccount: string;
+  channel: string;
+  category: string;
 };
 
 function balanceRecalcText(b: { selfGap: string | null; nextGap: string | null; hasNext: boolean }): string {
@@ -48,11 +52,19 @@ function draftOf(r: TxRow): TxDraft {
     balance: r.balance == null ? '' : String(r.balance),
     summary: r.summary ?? '',
     counterparty: r.counterparty ?? '',
+    counterpartyAccount: r.counterpartyAccount ?? '',
+    channel: r.channel ?? '',
+    category: r.category ?? '',
   };
 }
 
 function fmtAmount(n: number | undefined, unit: MoneyUnit): string {
   return n == null ? '—' : formatByUnit(n, unit);
+}
+
+function fileLabel(relPath: string): string {
+  const parts = relPath.split(/[/\\]/);
+  return parts[parts.length - 1] || relPath;
 }
 
 /**
@@ -74,16 +86,27 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [unit, setUnit] = useState<MoneyUnit>('yuan');
-  const [bulkCat, setBulkCat] = useState('');
-  const [bulkBusy, setBulkBusy] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [expandedKeys, setExpandedKeys] = useState<number[]>([]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState<TxDraft | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkCat, setBulkCat] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [compareFile, setCompareFile] = useState<BankFile | null>(null);
+  const [comparePick, setComparePick] = useState(false);
+  const [taskFiles, setTaskFiles] = useState<BankFile[]>([]);
+  const [filesBusy, setFilesBusy] = useState(false);
+  const [localUrl, setLocalUrl] = useState<string | null>(null);
+  const [localName, setLocalName] = useState('');
+  const [focus, setFocus] = useState<{ id: number; fileId: number; fileName: string; page: number } | null>(null);
+  const localUrlRef = useRef<string | null>(null);
+  const queryBeforeRef = useRef<TxQuery | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
+  const compare = compareFile != null;
 
   useEffect(() => {
     if (query.taskId == null) {
@@ -163,7 +186,18 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
 
   // 换任务，或从某个流水文件进来时，带上它的银行和账户。
   useEffect(() => {
+    setFocus(null);
+    setCompareFile(null);
+    setComparePick(false);
     setSelectedIds([]);
+    setBulkCat('');
+    if (localUrlRef.current) {
+      URL.revokeObjectURL(localUrlRef.current);
+      localUrlRef.current = null;
+    }
+    setLocalUrl(null);
+    setLocalName('');
+    queryBeforeRef.current = null;
     setQuery((q) => ({
       ...q,
       taskId,
@@ -199,7 +233,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   }, [query, reloadKey]);
 
   const patch = (p: Partial<TxQuery>) => {
-    setSelectedIds([]);
     setNotice(undefined);
     setQuery((q) => ({ ...q, ...p, page: 1 }));
   };
@@ -211,7 +244,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     setSelectedIds((prev) => [...prev.filter((id) => !pageIds.has(id)), ...picked]);
   }
 
-  /** 多选改判：写交易级 category（src=manual），之后 LLM 分类不会覆盖 */
+  /** 对照里多选改判。记为人工后，自动分类不会覆盖 */
   async function applyBulk() {
     if (selectedIds.length === 0 || !bulkCat || bulkBusy) return;
     const category = bulkCat === '__clear__' ? null : bulkCat;
@@ -226,7 +259,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       setReloadKey((k) => k + 1);
     } catch (e) {
       setError((e as Error).message);
-      setNotice(undefined);
     } finally {
       setBulkBusy(false);
     }
@@ -248,7 +280,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   function openEdit(r: TxRow) {
     setEditingId(r.id);
     setDraft(draftOf(r));
-    setExpandedKeys((keys) => (keys.includes(r.id) ? keys : [...keys, r.id]));
     setError(undefined);
     setNotice(undefined);
   }
@@ -275,6 +306,13 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
         direction: draft.direction,
         balance,
         counterparty: draft.counterparty,
+        ...(compare
+          ? {
+              counterpartyAccount: draft.counterpartyAccount,
+              channel: draft.channel,
+              category: draft.category.trim() ? draft.category.trim() : null,
+            }
+          : {}),
       });
       const other = (res.row.reviewNote ?? '')
         .split('；')
@@ -293,44 +331,156 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     }
   }
 
-  /** M4 改判：写交易级 category（src=manual），下一批 LLM 分类会自动带上这个口径 */
-  async function recategorize(r: TxRow, category: string | null) {
-    try {
-      const res = await api.patchTransaction(r.id, {
-        date: r.date ?? '',
-        summary: r.summary ?? '',
-        amount: r.amount,
-        direction: r.direction,
-        balance: r.balance ?? null,
-        counterparty: r.counterparty ?? '',
-        category,
-      });
-      setData((d) =>
-        d
-          ? { ...d, rows: d.rows.map((x) => (x.id === res.row.id ? res.row : x)) }
-          : d,
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
   const activeFilterCount = [
     query.bank, query.accountNo, query.fundUse, query.from, query.to,
     query.counterparty, query.status, query.category,
   ].filter((v) => v !== undefined && v !== '').length;
 
+  async function openCompare() {
+    if (taskId == null) return;
+    setComparePick(true);
+    setFilesBusy(true);
+    setError(undefined);
+    try {
+      const detail = await api.getTask(taskId);
+      setTaskFiles(detail.files.filter((f) => f.relPath.toLowerCase().endsWith('.pdf')));
+    } catch (e) {
+      setTaskFiles([]);
+      setError((e as Error).message);
+    } finally {
+      setFilesBusy(false);
+    }
+  }
+
+  function enterCompare(file: BankFile) {
+    queryBeforeRef.current = query;
+    setCompareFile(file);
+    setComparePick(false);
+    setFocus(null);
+    setSelectedIds([]);
+    setBulkCat('');
+    setQuery((q) => ({
+      taskId: q.taskId,
+      fileId: file.id,
+      sort: 'stmt',
+      page: 1,
+      pageSize: q.pageSize ?? 50,
+    }));
+  }
+
+  function switchCompare(file: BankFile) {
+    setComparePick(false);
+    if (file.id === compareFile?.id) return;
+    setCompareFile(file);
+    setFocus(null);
+    setSelectedIds([]);
+    setBulkCat('');
+    if (localUrlRef.current) {
+      URL.revokeObjectURL(localUrlRef.current);
+      localUrlRef.current = null;
+    }
+    setLocalUrl(null);
+    setLocalName('');
+    setQuery((q) => ({ ...q, fileId: file.id, page: 1 }));
+  }
+
+  function exitCompare() {
+    const prev = queryBeforeRef.current;
+    queryBeforeRef.current = null;
+    setCompareFile(null);
+    setComparePick(false);
+    setFocus(null);
+    setSelectedIds([]);
+    setBulkCat('');
+    if (localUrlRef.current) {
+      URL.revokeObjectURL(localUrlRef.current);
+      localUrlRef.current = null;
+    }
+    setLocalUrl(null);
+    setLocalName('');
+    if (prev) setQuery(prev);
+    else setQuery((q) => ({ ...q, fileId: undefined, page: 1 }));
+  }
+
+  function openLocalPdf(file: File | undefined) {
+    if (!file) return;
+    if (localUrlRef.current) URL.revokeObjectURL(localUrlRef.current);
+    const url = URL.createObjectURL(file);
+    localUrlRef.current = url;
+    setLocalUrl(url);
+    setLocalName(file.name);
+  }
+
+  useEffect(() => {
+    if (!compare) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (editingId != null) {
+        setEditingId(null);
+        setDraft(null);
+      } else exitCompare();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // 只在进入对照时绑定。退出时读的是 ref 里保存的筛选。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compare, editingId]);
+
+  const pdfPage = focus?.page && focus.page > 0 ? focus.page : 1;
+  const pdfBase = localUrl ?? (compareFile ? `/api/files/${compareFile.id}/pdf` : '');
+  const pdfSrc = pdfBase ? `${pdfBase}#page=${pdfPage}` : '';
+
   return (
-    <div className="tx-page">
-      <div className="tx-page-inner">
+    <div className={compare ? 'tx-compare-screen' : 'tx-page'}>
+      <div className={compare ? 'tx-compare-body' : 'tx-page-inner'}>
+      {compare && compareFile ? (
+        <div className="tx-compare-bar">
+          <span className="tx-compare-name" title={localName || compareFile.relPath}>
+            {fileLabel(compareFile.relPath)}
+            {localName ? ` · ${localName}` : ''}
+          </span>
+          <div className="tx-compare-bar-actions">
+            <button type="button" className="secondary-button" onClick={() => void openCompare()}>
+              切换
+            </button>
+            <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()}>
+              本地
+            </button>
+            <button type="button" className="secondary-button" onClick={exitCompare}>
+              退出
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              hidden
+              onChange={(e) => {
+                openLocalPdf(e.target.files?.[0]);
+                e.currentTarget.value = '';
+              }}
+            />
+          </div>
+        </div>
+      ) : (
       <div className="page-header" style={{ marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>交易</h1>
         </div>
-        <MoneyUnitSelect value={unit} onChange={setUnit} />
+        <div className="page-header-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={taskId == null}
+            onClick={() => void openCompare()}
+          >
+            <Columns2 size={14} /> 对照
+          </button>
+          <MoneyUnitSelect value={unit} onChange={setUnit} />
+        </div>
       </div>
+      )}
 
-      {taskId == null ? (
+      {compare ? null : taskId == null ? (
         <div className="flow-empty">
           <h3>先在右上角打开一个任务</h3>
           <p>交易只显示当前任务的流水。</p>
@@ -435,7 +585,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               <button
                 className="filter-reset"
                 onClick={() => {
-                  setSelectedIds([]);
                   setNotice(undefined);
                   setQuery({
                     taskId: query.taskId,
@@ -456,10 +605,13 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
         <div className="flow-notice">加载过滤器选项…</div>
       )}
 
-      {error ? <div className="flow-error">{error}</div> : null}
-      {notice ? <div className="flow-notice">{notice}</div> : null}
+      {!compare && error ? <div className="flow-error">{error}</div> : null}
+      {!compare && notice ? <div className="flow-notice">{notice}</div> : null}
 
-      {data ? (
+      <div className={compare ? 'tx-compare' : undefined}>
+      <div className={compare ? 'tx-compare-left' : undefined}>
+      <div className={compare ? 'tx-compare-left-scroll' : undefined}>
+      {compare || !data ? null : (
         <div className="tx-summary">
           <span>共 {data.total.toLocaleString()} 笔</span>
           <span className="tx-summary-in">流入 {formatByUnit(data.inflow, unit)}</span>
@@ -468,9 +620,9 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             第 {query.page} 页 · 每页 {query.pageSize} 笔
           </span>
         </div>
-      ) : null}
+      )}
 
-      {data && data.rows.length === 0 ? (
+      {compare || !(data && data.rows.length === 0) ? null : (
         <div className="flow-empty">
           <h3>
             <Inbox size={18} style={{ verticalAlign: '-3px', marginRight: 8 }} />
@@ -478,7 +630,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           </h3>
           <p>把流水 PDF 放进任务目录后自动解析入库；或到任务页点「重新扫描」。</p>
         </div>
-      ) : null}
+      )}
+
+      {compare && error && editingId == null ? <div className="flow-error">{error}</div> : null}
+      {compare && notice ? <div className="flow-notice">{notice}</div> : null}
 
       <div className="tx-table">
         <Table
@@ -486,11 +641,35 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           rowKey="id"
           loading={loading}
           dataSource={data?.rows ?? []}
-          rowSelection={{
-            selectedRowKeys: selectedIds,
-            onChange: onSelectChange,
-            columnWidth: 36,
-          }}
+          rowSelection={
+            compare
+              ? {
+                  selectedRowKeys: selectedIds,
+                  onChange: onSelectChange,
+                  columnWidth: 36,
+                }
+              : undefined
+          }
+          onRow={
+            compare
+              ? (r: TxRow) => ({
+                  onClick: (e) => {
+                    const el = e.target as HTMLElement;
+                    if (el.closest('.ant-table-selection-column, button, a, input, label')) return;
+                    setFocus({ id: r.id, fileId: r.fileId, fileName: r.fileName, page: r.page || 1 });
+                    setExpandedKeys((keys) => (keys.includes(r.id) ? keys.filter((id) => id !== r.id) : [...keys, r.id]));
+                  },
+                })
+              : undefined
+          }
+          rowClassName={
+            compare
+              ? (r: TxRow) => {
+                  const base = r.id === focus?.id ? 'tx-compare-hit' : 'tx-compare-row';
+                  return r.status === 'needs_review' ? `${base} tx-compare-review` : base;
+                }
+              : undefined
+          }
           pagination={{
             current: query.page ?? 1,
             pageSize: query.pageSize ?? 50,
@@ -499,31 +678,32 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             hideOnSinglePage: false,
             onChange: (p) => setQuery((q) => ({ ...q, page: p })),
           }}
-          expandable={{
-            rowExpandable: () => true,
-            expandedRowKeys: expandedKeys,
-            onExpand: (expanded: boolean, r: TxRow) => {
-              setExpandedKeys((keys) => (expanded ? [...keys, r.id] : keys.filter((id) => id !== r.id)));
-              if (!expanded && editingId === r.id) {
-                setEditingId(null);
-                setDraft(null);
-              }
-            },
-            expandedRowRender: (r: TxRow) => (
-              <TxDetailRow
-                r={r}
-                draft={editingId === r.id ? draft : null}
-                busy={editBusy}
-                onChange={setDraft}
-                onSave={() => void saveEdit(r.id)}
-                onCancel={() => {
-                  setEditingId(null);
-                  setDraft(null);
-                }}
-              />
-            ),
-          }}
-          columns={[
+          expandable={
+            compare
+              ? {
+                  rowExpandable: () => true,
+                  expandedRowKeys: expandedKeys,
+                  onExpand: (expanded: boolean, r: TxRow) => {
+                    setExpandedKeys((keys) => (expanded ? [...keys, r.id] : keys.filter((id) => id !== r.id)));
+                  },
+                  expandIcon: ({ record }: { expanded: boolean; onExpand: (r: TxRow, e: MouseEvent<HTMLElement>) => void; record: TxRow }) => (
+                    <button
+                      type="button"
+                      className="ant-table-row-expand-icon ant-table-row-expand-icon-collapsed"
+                      aria-label="修改交易"
+                      title="修改这笔交易"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFocus({ id: record.id, fileId: record.fileId, fileName: record.fileName, page: record.page || 1 });
+                        openEdit(record);
+                      }}
+                    />
+                  ),
+                  expandedRowRender: (r: TxRow) => <TxRawRow r={r} />,
+                }
+              : undefined
+          }
+          columns={([
             {
               title: '关注',
               width: 52,
@@ -578,36 +758,26 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '分类',
-              width: 170,
-              render: (_: unknown, r: TxRow) => {
-                const extra = r.category && !catSet.includes(r.category) ? [r.category] : [];
-                return (
-                  <div className="tx-cat">
-                    <select
-                      className="input tx-cat-select"
-                      value={r.category ?? ''}
-                      onChange={(e) => void recategorize(r, e.target.value || null)}
-                    >
-                      <option value="">未分类</option>
-                      {catSet.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                      {extra.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
-                    {r.category ? (
-                      <span className={`tx-cat-src${r.categorySrc === 'manual' ? ' manual' : ''}`}>
-                        {r.categorySrc === 'manual' ? '人工改判' : 'LLM'}
-                      </span>
-                    ) : null}
-                  </div>
-                );
-              },
+              width: 140,
+              ellipsis: true,
+              render: (_: unknown, r: TxRow) =>
+                r.category ? (
+                  <span className="tx-cat">
+                    <span title={r.category}>{r.category}</span>
+                    <span className={`tx-cat-src${r.categorySrc === 'manual' ? ' manual' : ''}`}>
+                      {r.categorySrc === 'manual' ? '人工改判' : 'LLM'}
+                    </span>
+                  </span>
+                ) : (
+                  '—'
+                ),
+            },
+            {
+              title: '开户主体',
+              dataIndex: 'holder',
+              width: 168,
+              ellipsis: true,
+              render: (v: unknown) => (typeof v === 'string' && v ? <span title={v}>{v}</span> : '—'),
             },
             {
               title: '银行 / 账户',
@@ -630,39 +800,29 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
-              title: '文件',
-              width: 150,
-              ellipsis: true,
-              render: (_: unknown, r: TxRow) => <span className="tx-file" title={r.fileName}>{r.fileName}</span>,
-            },
-            {
               title: '状态',
-              width: 88,
+              width: 112,
               render: (_: unknown, r: TxRow) => {
                 const chip = STATUS_CHIP[r.status] ?? { cls: 'chip-muted', label: r.status };
                 return (
-                  <button
-                    type="button"
-                    className={`chip tx-status ${chip.cls}`}
-                    title="修改这条流水的日期、金额、余额和摘要。正常的也可以改"
-                    onClick={() => openEdit(r)}
-                  >
+                  <span className={`chip tx-status ${chip.cls}`} title={r.reviewNote || chip.label}>
                     {chip.label}
                     {r.confidence < 0.99 ? ` ${(r.confidence * 100).toFixed(0)}%` : ''}
-                  </button>
+                  </span>
                 );
               },
             },
-          ] as never}
+          ] as { title?: unknown }[]).filter((c) => !compare || ['日期', '金额', '余额', '状态'].includes(String(c.title))) as never}
         />
       </div>
-
-      {selectedIds.length > 0 ? (
-        <div className="tx-bulk">
+      </div>
+      {compare && selectedIds.length > 0 ? (
+        <div className="tx-bulk tx-compare-bulk">
           <span className="tx-bulk-count">已选 {selectedIds.length} 笔</span>
           <span className="tx-bulk-hint">可跨页勾选。改判后记为人工，自动分类不会覆盖。</span>
           <select
             className="input filter-control tx-bulk-select"
+            aria-label="批量分类"
             value={bulkCat}
             disabled={bulkBusy}
             onChange={(e) => setBulkCat(e.target.value)}
@@ -670,15 +830,14 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             <option value="">选择分类</option>
             <option value="__clear__">未分类</option>
             {catSet.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
+              <option key={c} value={c}>{c}</option>
             ))}
           </select>
-          <button className="primary-button" disabled={!bulkCat || bulkBusy} onClick={() => void applyBulk()}>
+          <button type="button" className="primary-button" disabled={!bulkCat || bulkBusy} onClick={() => void applyBulk()}>
             {bulkBusy ? '改判中…' : '改判'}
           </button>
           <button
+            type="button"
             className="secondary-button"
             disabled={bulkBusy}
             onClick={() => {
@@ -690,68 +849,144 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           </button>
         </div>
       ) : null}
+      {compare && draft && editingId != null ? (
+        <CompareEdit
+          draft={draft}
+          categories={catSet}
+          busy={editBusy}
+          error={error}
+          onChange={setDraft}
+          onSave={() => void saveEdit(editingId)}
+          onCancel={() => {
+            setEditingId(null);
+            setDraft(null);
+            setError(undefined);
+          }}
+        />
+      ) : null}
+      </div>
+      {compare ? (
+        <div className="tx-compare-right">
+          {pdfSrc ? <iframe key={pdfSrc} className="tx-pdf-frame" title="流水 PDF" src={pdfSrc} /> : null}
+        </div>
+      ) : null}
+      </div>
+
+      {comparePick ? (
+        <Modal title="选择要对照的流水" lead="选一份本任务的银行流水，进入左右对照。" onClose={() => setComparePick(false)}>
+          {filesBusy ? (
+            <p className="modal-lead">正在读取本任务的流水…</p>
+          ) : taskFiles.length === 0 ? (
+            <p className="modal-lead">本任务还没有 PDF。把流水放进任务目录后，再来对照。</p>
+          ) : (
+            <div className="tx-compare-files">
+              {taskFiles.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`tx-compare-file${compareFile?.id === f.id ? ' on' : ''}`}
+                  onClick={() => (compareFile ? switchCompare(f) : enterCompare(f))}
+                >
+                  <span className="tx-compare-file-name">{fileLabel(f.relPath)}</span>
+                  <span className="tx-compare-file-meta">
+                    {[f.bank, f.accountNo ? f.accountNo.slice(-4) : '', f.txCount ? `${f.txCount} 笔` : ''].filter(Boolean).join(' · ') || 'PDF'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="secondary-button" onClick={() => setComparePick(false)}>
+              取消
+            </button>
+          </div>
+        </Modal>
+      ) : null}
       </div>
     </div>
   );
 }
 
-/** 展开行：可改这条流水，并看原始文本 */
-function TxDetailRow({
-  r,
+/** 对照模式里改这笔交易。只盖住左半边，右边的 PDF 仍可对照。 */
+function CompareEdit({
   draft,
+  categories,
   busy,
+  error,
   onChange,
   onSave,
   onCancel,
 }: {
-  r: TxRow;
-  draft: TxDraft | null;
+  draft: TxDraft;
+  categories: string[];
   busy: boolean;
+  error?: string;
   onChange: (draft: TxDraft) => void;
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const extra = draft.category && !categories.includes(draft.category) ? [draft.category] : [];
   return (
-    <div className="tx-detail">
-      {draft ? (
-        <div className="review-form tx-edit">
+    <div
+      className="tx-compare-edit-mask"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) onCancel();
+      }}
+    >
+      <div className="tx-compare-edit" role="dialog" aria-label="修改交易">
+        <h3>修改交易</h3>
+        {error ? <div className="flow-error">{error}</div> : null}
+        <div className="tx-compare-edit-grid">
+          <span>日期</span>
           <input className="input" type="date" aria-label="日期" value={draft.date} onChange={(e) => onChange({ ...draft, date: e.target.value })} />
-          <select
-            className="input"
-            aria-label="方向"
-            value={draft.direction}
-            onChange={(e) => onChange({ ...draft, direction: e.target.value as 'in' | 'out' })}
-          >
+          <span>方向</span>
+          <select className="input" aria-label="方向" value={draft.direction} onChange={(e) => onChange({ ...draft, direction: e.target.value as 'in' | 'out' })}>
             <option value="out">支出</option>
             <option value="in">收入</option>
           </select>
+          <span>金额</span>
           <input className="input" aria-label="金额（元）" value={draft.amount} onChange={(e) => onChange({ ...draft, amount: e.target.value })} placeholder="金额（元）" />
+          <span>余额</span>
           <input className="input" aria-label="余额（元）" value={draft.balance} onChange={(e) => onChange({ ...draft, balance: e.target.value })} placeholder="余额（元），可空" />
-          <input className="input wide" aria-label="摘要" value={draft.summary} onChange={(e) => onChange({ ...draft, summary: e.target.value })} placeholder="摘要" />
-          <input className="input wide" aria-label="对手方" value={draft.counterparty} onChange={(e) => onChange({ ...draft, counterparty: e.target.value })} placeholder="对手方" />
-          <button className="primary-button" disabled={busy} onClick={onSave}>
-            {busy ? '保存中…' : '保存'}
-          </button>
-          <button className="secondary-button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
+          <span>摘要</span>
+          <input className="input" aria-label="摘要" value={draft.summary} onChange={(e) => onChange({ ...draft, summary: e.target.value })} placeholder="摘要" />
+          <span>对手方</span>
+          <input className="input" aria-label="对手方" value={draft.counterparty} onChange={(e) => onChange({ ...draft, counterparty: e.target.value })} placeholder="对手方" />
+          <span>对方账号</span>
+          <input className="input" aria-label="对方账号" value={draft.counterpartyAccount} onChange={(e) => onChange({ ...draft, counterpartyAccount: e.target.value })} placeholder="对方账号" />
+          <span>渠道</span>
+          <input className="input" aria-label="渠道" value={draft.channel} onChange={(e) => onChange({ ...draft, channel: e.target.value })} placeholder="渠道" />
+          <span>分类</span>
+          <select className="input" aria-label="分类" value={draft.category} onChange={(e) => onChange({ ...draft, category: e.target.value })}>
+            <option value="">未分类</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            {extra.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
         </div>
-      ) : null}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>取消</button>
+          <button type="button" className="primary-button" disabled={busy} onClick={onSave}>{busy ? '保存中…' : '保存'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 对照模式里展开，看原始行，方便在右边的 PDF 里定位。 */
+function TxRawRow({ r }: { r: TxRow }) {
+  return (
+    <div className="tx-detail">
       {r.reviewNote ? <div className="tx-detail-review">复核：{r.reviewNote}</div> : null}
       <div className="tx-detail-meta">
-        <span>
-          {r.clientName} / {r.projectName} / {r.taskName}
-        </span>
         <span>
           {r.fileName} · 第 {r.page} 页 · 行 {r.lineNo}
         </span>
         {r.channel ? <span>渠道：{r.channel}</span> : null}
         {r.counterpartyAccount ? <span>对方账号：{r.counterpartyAccount}</span> : null}
-        {r.category ? (
-          <span>
-            分类：{r.category}（{r.categorySrc === 'manual' ? '人工' : 'LLM'}）
-          </span>
-        ) : null}
       </div>
       {r.rawText ? <pre className="tx-raw">{r.rawText}</pre> : <div className="tx-raw-empty">（无原始行文本）</div>}
     </div>

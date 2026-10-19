@@ -222,6 +222,8 @@ export interface TxRow {
   clientName: string;
   bank?: string;
   accountNo?: string;
+  /** 这笔流水所属账户的开户主体 */
+  holder?: string;
   /** 募投项目，由融资项目上的账户归集带出 */
   fundUseId?: number;
   fundUse?: string;
@@ -261,6 +263,8 @@ export interface WatchLog {
 export interface WatchItem {
   tx: TxRow;
   verdict?: WatchVerdict;
+  /** 关注页上的交易情况备忘，一条可反复修改的文字 */
+  memo: string;
   logs: WatchLog[];
 }
 

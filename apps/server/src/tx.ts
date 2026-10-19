@@ -6,6 +6,8 @@
  *  POST /api/files/:id/refresh   任务级重扫+解析（chokidar 之外的手动通道）
  *  DELETE /api/files/:id         删除文件登记（含其交易；磁盘 PDF 不动）
  */
+import { createReadStream, existsSync } from 'node:fs';
+import path from 'node:path';
 import { Router } from 'express';
 import { db } from './db.js';
 import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
@@ -22,6 +24,7 @@ export function toTxRow(r: Record<string, unknown>): TxRow {
     clientName: String(r.client_name ?? ''),
     bank: (r.bank as string | null) ?? undefined,
     accountNo: (r.account_no as string | null) ?? undefined,
+    holder: (r.holder as string | null) || undefined,
     fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
     fundUse: (r.fund_use_name as string | null) || undefined,
     page: Number(r.page),
@@ -64,6 +67,7 @@ SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direct
        t.risk_flags, t.confidence, t.review_note, t.raw_text, t.status,
        COALESCE(w.marked, 0) AS watched,
        f.rel_path AS file_name, f.bank, f.account_no,
+       COALESCE(NULLIF(TRIM(fua.holder), ''), NULLIF(TRIM(f.account_name), '')) AS holder,
        fu.id AS fund_use_id, fu.name AS fund_use_name,
        tk.name AS task_name, p.name AS project_name, c.name AS client_name
 ${TX_FROM}`;
@@ -107,6 +111,8 @@ transactionsRouter.patch('/:id', (req, res) => {
     direction?: string;
     balance?: number | null;
     counterparty?: string | null;
+    counterpartyAccount?: string | null;
+    channel?: string | null;
     /** M4 改判：string=改判成该分类，null=清除（只在请求体显式携带 category 时生效） */
     category?: string | null;
   };
@@ -120,8 +126,20 @@ transactionsRouter.patch('/:id', (req, res) => {
         ? null
         : Number(b.balance);
     if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
+    const cur = db.prepare('SELECT counterparty_account, channel FROM transactions WHERE id = ?').get(id) as {
+      counterparty_account: string | null;
+      channel: string | null;
+    };
+    const textOr = (key: 'counterpartyAccount' | 'channel', prev: string | null) => {
+      if (!(key in b)) return prev;
+      const raw = b[key];
+      return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+    };
     db.prepare(
-      `UPDATE transactions SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ? WHERE id = ?`,
+      `UPDATE transactions
+       SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ?,
+           counterparty_account = ?, channel = ?
+       WHERE id = ?`,
     ).run(
       typeof b.date === 'string' && b.date.trim() ? b.date.trim() : null,
       typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null,
@@ -129,6 +147,8 @@ transactionsRouter.patch('/:id', (req, res) => {
       b.direction,
       balance == null ? null : Math.round(balance * 100) / 100,
       typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null,
+      textOr('counterpartyAccount', cur.counterparty_account),
+      textOr('channel', cur.channel),
       id,
     );
   }
@@ -358,6 +378,34 @@ filesRouter.patch('/:id', (req, res) => {
     id,
   );
   res.json({ ok: true, bank, accountNo, accountName });
+});
+
+/** 在页内对照阅读。只读任务目录里已登记的 PDF，路径不能逃出任务目录。 */
+filesRouter.get('/:id/pdf', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db
+    .prepare(
+      `SELECT f.rel_path, t.folder_path
+       FROM files f JOIN tasks t ON t.id = f.task_id
+       WHERE f.id = ?`,
+    )
+    .get(id) as { rel_path: string; folder_path: string } | undefined;
+  if (!row) return res.status(404).json({ error: '文件不存在' });
+  const root = path.resolve(row.folder_path);
+  const file = path.resolve(root, row.rel_path);
+  const rel = path.relative(root, file);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return res.status(400).json({ error: '文件不存在' });
+  if (!file.toLowerCase().endsWith('.pdf')) return res.status(400).json({ error: '不是 PDF' });
+  if (!existsSync(file)) return res.status(404).json({ error: '磁盘上找不到这份 PDF' });
+  const name = path.basename(file);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+  const stream = createReadStream(file);
+  stream.on('error', () => {
+    if (!res.headersSent) res.status(404).json({ error: '磁盘上找不到这份 PDF' });
+    else res.destroy();
+  });
+  stream.pipe(res);
 });
 
 /** 删除文件登记（其交易/命中级联删除；磁盘 PDF 不动，可重扫恢复） */

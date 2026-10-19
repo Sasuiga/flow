@@ -1,6 +1,6 @@
 /**
- * 关注：交易页标记是源头，关注页只追加记录和判定。
- * 取消标记也只能在交易页做。关注页不写 tx_watch.marked，也不改交易字段。
+ * 关注：交易页标记是源头。关注页追加记录和判定。
+ * 判定为无问题时取消交易页标记，这条就不再出现在关注列表。
  */
 import { Router } from 'express';
 import { WatchItem, WatchLog, WatchVerdict, WATCH_VERDICTS } from '@flow/shared';
@@ -45,9 +45,14 @@ watchRouter.get('/', (req, res) => {
     )
     .all(...args) as Record<string, unknown>[];
   const ids = rows.map((r) => Number(r.id));
+  const memoByTx = new Map<number, string>();
   const logsByTx = new Map<number, WatchLog[]>();
   if (ids.length > 0) {
     const placeholders = ids.map(() => '?').join(',');
+    const memos = db
+      .prepare(`SELECT transaction_id, memo FROM tx_watch WHERE transaction_id IN (${placeholders})`)
+      .all(...ids) as { transaction_id: number; memo: string | null }[];
+    for (const row of memos) memoByTx.set(row.transaction_id, row.memo ?? '');
     const logs = db
       .prepare(
         `SELECT id, transaction_id, kind, body, created_at FROM tx_watch_log
@@ -61,10 +66,11 @@ watchRouter.get('/', (req, res) => {
     }
   }
   const items: WatchItem[] = rows.map((r) => {
-    const logs = logsByTx.get(Number(r.id)) ?? [];
+    const id = Number(r.id);
+    const logs = logsByTx.get(id) ?? [];
     const verdictLog = [...logs].reverse().find((l) => l.kind === 'verdict');
     const verdict = WATCH_VERDICTS.find((v) => v === verdictLog?.body);
-    return { tx: toTxRow(r), verdict, logs };
+    return { tx: toTxRow(r), verdict, memo: memoByTx.get(id) ?? '', logs };
   });
   res.json({ items, total: items.length });
 });
@@ -95,20 +101,30 @@ watchRouter.post('/:id/note', (req, res) => {
   if (!Number.isFinite(id) || !txExists(id)) return res.status(404).json({ error: '交易不存在' });
   if (!isMarked(id)) return res.status(400).json({ error: '这笔还没在交易页标记' });
   const text = String((req.body as { text?: unknown } | undefined)?.text ?? '').trim();
-  if (!text) return res.status(400).json({ error: '记录不能为空' });
-  if (text.length > 2000) return res.status(400).json({ error: '记录请控制在 2000 字以内' });
-  appendLog(id, 'note', text);
-  res.json({ ok: true });
+  if (text.length > 2000) return res.status(400).json({ error: '备忘请控制在 2000 字以内' });
+  db.prepare('UPDATE tx_watch SET memo = ?, updated_at = ? WHERE transaction_id = ?').run(text, now(), id);
+  res.json({ ok: true, memo: text });
 });
 
 watchRouter.post('/:id/verdict', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || !txExists(id)) return res.status(404).json({ error: '交易不存在' });
-  if (!isMarked(id)) return res.status(400).json({ error: '这笔还没在交易页标记' });
   const verdict = String((req.body as { verdict?: unknown } | undefined)?.verdict ?? '').trim();
   if (!WATCH_VERDICTS.includes(verdict as WatchVerdict)) {
     return res.status(400).json({ error: '判定需为有问题、无问题或已处理' });
   }
+  if (verdict === '无问题') {
+    const latest = db
+      .prepare(`SELECT body FROM tx_watch_log WHERE transaction_id = ? AND kind = 'verdict' ORDER BY id DESC LIMIT 1`)
+      .get(id) as { body: string } | undefined;
+    if (latest?.body !== verdict) appendLog(id, 'verdict', verdict);
+    if (isMarked(id)) {
+      db.prepare('UPDATE tx_watch SET marked = 0, updated_at = ? WHERE transaction_id = ?').run(now(), id);
+      appendLog(id, 'unmark', '判定无问题，取消关注');
+    }
+    return res.json({ ok: true, verdict, watched: false });
+  }
+  if (!isMarked(id)) return res.status(400).json({ error: '这笔还没在交易页标记' });
   const latest = db
     .prepare(`SELECT body FROM tx_watch_log WHERE transaction_id = ? AND kind = 'verdict' ORDER BY id DESC LIMIT 1`)
     .get(id) as { body: string } | undefined;

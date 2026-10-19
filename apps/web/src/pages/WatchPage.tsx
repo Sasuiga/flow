@@ -1,6 +1,6 @@
 import { Bookmark, Inbox } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { WATCH_VERDICTS, WatchItem, WatchLog, WatchVerdict } from '@flow/shared';
+import { WatchItem, WatchVerdict } from '@flow/shared';
 import { api } from '../api';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 
@@ -11,26 +11,15 @@ const VERDICT_CHIP: Record<WatchVerdict | '待处理', string> = {
   已处理: 'chip-primary',
 };
 
-function logLabel(log: WatchLog): string {
-  if (log.kind === 'note') return log.body;
-  if (log.kind === 'verdict') return `判定：${log.body}`;
-  return log.body;
-}
-
-function logTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('zh-CN', { hour12: false });
-}
-
 /**
  * 关注页：只列交易页仍标记着的流水。
- * 记录和判定追加进日志，不改交易字段，也不取消交易页上的标记。
+ * 每条下面是一条可保存、再编辑的备忘。判定无问题会取消关注，这条不再显示。
  */
 export default function WatchPage({ taskId }: { taskId?: number; taskName?: string }) {
   const [items, setItems] = useState<WatchItem[]>([]);
   const [unit, setUnit] = useState<MoneyUnit>('yuan');
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [mode, setMode] = useState<Record<number, 'edit' | 'view'>>({});
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState<string | undefined>();
 
@@ -50,20 +39,29 @@ export default function WatchPage({ taskId }: { taskId?: number; taskName?: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
 
-  async function saveNote(id: number) {
+  async function saveMemo(item: WatchItem) {
+    const id = item.tx.id;
     const text = (drafts[id] ?? '').trim();
-    if (!text || busy) return;
+    if (busy) return;
+    if (!text && !item.memo) return;
     setBusy(`${id}:note`);
     setError(undefined);
     try {
       await api.watchNote(id, text);
-      setDrafts((d) => ({ ...d, [id]: '' }));
+      setDrafts((d) => ({ ...d, [id]: text }));
+      setMode((m) => ({ ...m, [id]: text ? 'view' : 'edit' }));
       await load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(undefined);
     }
+  }
+
+  function startEdit(item: WatchItem) {
+    const id = item.tx.id;
+    setDrafts((d) => ({ ...d, [id]: item.memo }));
+    setMode((m) => ({ ...m, [id]: 'edit' }));
   }
 
   async function chooseVerdict(id: number, verdict: WatchVerdict) {
@@ -140,7 +138,7 @@ export default function WatchPage({ taskId }: { taskId?: number; taskName?: stri
                 </div>
 
                 <div className="watch-actions">
-                  {WATCH_VERDICTS.map((v) => (
+                  {(['无问题', '已处理'] as WatchVerdict[]).map((v) => (
                     <button
                       key={v}
                       type="button"
@@ -154,34 +152,34 @@ export default function WatchPage({ taskId }: { taskId?: number; taskName?: stri
                 </div>
 
                 <div className="watch-note">
-                  <textarea
-                    className="input"
-                    rows={2}
-                    maxLength={2000}
-                    placeholder="记下对这笔交易的疑问、核对情况和结论"
-                    value={drafts[r.id] ?? ''}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
-                  />
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={!(drafts[r.id] ?? '').trim() || busy === `${r.id}:note`}
-                    onClick={() => void saveNote(r.id)}
-                  >
-                    {busy === `${r.id}:note` ? '记下中…' : '记下'}
-                  </button>
+                  {(mode[r.id] ?? (item.memo ? 'view' : 'edit')) === 'edit' ? (
+                    <>
+                      <textarea
+                        className="input"
+                        rows={2}
+                        maxLength={2000}
+                        placeholder="记下这笔交易的情况"
+                        value={drafts[r.id] ?? ''}
+                        onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={(!(drafts[r.id] ?? '').trim() && !item.memo) || busy === `${r.id}:note`}
+                        onClick={() => void saveMemo(item)}
+                      >
+                        {busy === `${r.id}:note` ? '保存中…' : '保存'}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="watch-memo">{item.memo}</p>
+                      <button type="button" className="secondary-button" onClick={() => startEdit(item)}>
+                        编辑
+                      </button>
+                    </>
+                  )}
                 </div>
-
-                {item.logs.length > 0 ? (
-                  <ol className="watch-log">
-                    {item.logs.map((log) => (
-                      <li key={log.id}>
-                        <time>{logTime(log.createdAt)}</time>
-                        <span>{logLabel(log)}</span>
-                      </li>
-                    ))}
-                  </ol>
-                ) : null}
               </article>
             );
           })}
