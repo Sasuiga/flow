@@ -21,6 +21,7 @@ import {
   TxQuery,
   TxRow,
   FundUse,
+  FundUseKind,
   ProjectAccount,
   FlowResponse,
   CategoryFocus,
@@ -29,6 +30,8 @@ import {
   CashLotReport,
   WatchItem,
 } from '@flow/shared';
+
+type FundUseInput = { name: string; kind: FundUseKind; addedOn: string; adjustedAmount: number };
 
 export interface LlmModelsResult {
   ok: boolean;
@@ -107,12 +110,10 @@ export const api = {
   createTask: (projectId: number, i: CreateEntityInput) =>
     j<FlowTask>(`/api/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(i) }),
   openProjectFolder: (id: number) => j<{ ok: boolean }>(`/api/projects/${id}/open`, { method: 'POST' }),
-  createFundUse: (
-    projectId: number,
-    body: { name: string; kind: '原始项目' | '新增项目'; addedOn: string; adjustedAmount: number },
-  ) => j<FundUse>(`/api/projects/${projectId}/uses`, { method: 'POST', body: JSON.stringify(body) }),
-  renameFundUse: (projectId: number, useId: number, name: string) =>
-    j<FundUse>(`/api/projects/${projectId}/uses/${useId}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  createFundUse: (projectId: number, body: FundUseInput) =>
+    j<FundUse>(`/api/projects/${projectId}/uses`, { method: 'POST', body: JSON.stringify(body) }),
+  updateFundUse: (projectId: number, useId: number, body: FundUseInput) =>
+    j<FundUse>(`/api/projects/${projectId}/uses/${useId}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteFundUse: (projectId: number, useId: number) =>
     j<{ ok: boolean }>(`/api/projects/${projectId}/uses/${useId}`, { method: 'DELETE' }),
   createAccount: (projectId: number, body: { holder: string; bank: string; accountNo: string; openedOn: string; fundUseId: number | null }) =>

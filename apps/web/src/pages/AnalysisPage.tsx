@@ -12,7 +12,7 @@ import {
 } from '@flow/shared';
 import { api } from '../api';
 import { formatDateTime } from '../lib/format';
-import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
+import { formatByUnit, MoneyUnit, MoneyUnitSelect, parseMoneyInput, rescaleMoneyInput } from '../lib/moneyUnit';
 import CashMandatePanel from './CashMandatePanel';
 
 const KIND_LABEL: Record<FlowLink['kind'], string> = {
@@ -474,9 +474,16 @@ function FlowTables({ result }: { result: FlowResult }) {
 function ExternalPay({ result }: { result: FlowResult }) {
   const [minText, setMinText] = useState('');
   const [unit, setUnit] = useState<MoneyUnit>('yuan');
-  const min = Number(minText.replace(/,/g, '').trim());
-  const active = minText.trim() !== '' && Number.isFinite(min) && min > 0;
-  const lines = useMemo(() => (active ? externalAtLeast(result, min * 10_000) : result.externalLines), [result, active, min]);
+  const minYuan = parseMoneyInput(minText, unit);
+  const active = minYuan != null && minYuan > 0;
+  const lines = useMemo(
+    () => (active && minYuan != null ? externalAtLeast(result, minYuan) : result.externalLines),
+    [result, active, minYuan],
+  );
+  function changeUnit(next: MoneyUnit) {
+    setMinText((text) => rescaleMoneyInput(text, unit, next));
+    setUnit(next);
+  }
   return (
     <section className="page-section">
       <div className="page-header">
@@ -492,9 +499,8 @@ function ExternalPay({ result }: { result: FlowResult }) {
             placeholder="金额"
             onChange={(e) => setMinText(e.target.value)}
           />
-          万元
         </label>
-        <MoneyUnitSelect value={unit} onChange={setUnit} />
+        <MoneyUnitSelect value={unit} onChange={changeUnit} />
       </div>
       {lines.length > 0 ? (
         <PartyTable lines={lines} showGroup unit={unit} />

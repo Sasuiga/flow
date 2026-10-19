@@ -1,28 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CashBoard, CategoryFocusLine } from '@flow/shared';
 import { api } from '../api';
-import { formatByUnit, MoneyUnit, moneyUnitName, MoneyUnitSelect } from '../lib/moneyUnit';
+import { formatByUnit, formatMoneyInput, MoneyUnit, moneyUnitName, MoneyUnitSelect, parseMoneyInput, rescaleMoneyInput } from '../lib/moneyUnit';
 
 type DraftBoard = {
   key: string;
   startDate: string;
   endDate: string;
-  limitWan: string;
+  limitText: string;
   note: string;
 };
 
 type Point = { date: string; balance: number };
-
-const yuanToWan = (yuan: number) => {
-  const text = (yuan / 10000).toFixed(6).replace(/\.?0+$/, '');
-  return text === '' ? '0' : text;
-};
-
-function wanToYuan(text: string): number | null {
-  const n = Number(text.replace(/,/g, '').trim());
-  if (!Number.isFinite(n) || n < 0) return null;
-  return Math.round(n * 10000 * 100) / 100;
-}
 
 function addDays(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number);
@@ -89,7 +78,7 @@ function compactAxis(n: number): string {
  * 余额 = 上期末仍在运作 + 截止日之后的申购 − 赎回。同一天若有更新的审议，按新额度判定。
  */
 export default function CashMandatePanel({ taskId, lines }: { taskId: number; lines: CategoryFocusLine[] }) {
-  const [openingWan, setOpeningWan] = useState('0');
+  const [openingText, setOpeningText] = useState('0');
   const [asOf, setAsOf] = useState('');
   const [drafts, setDrafts] = useState<DraftBoard[]>([]);
   const [seq, setSeq] = useState(1);
@@ -98,6 +87,8 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [unit, setUnit] = useState<MoneyUnit>('yuan');
+  const unitRef = useRef(unit);
+  unitRef.current = unit;
 
   useEffect(() => {
     let cancelled = false;
@@ -106,14 +97,14 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
       .cashMandate(taskId)
       .then((m) => {
         if (cancelled) return;
-        setOpeningWan(yuanToWan(m.opening));
+        setOpeningText(formatMoneyInput(m.opening, unitRef.current));
         setAsOf(m.openingAsOf);
         setDrafts(
           m.boards.map((b) => ({
             key: `s${b.id}`,
             startDate: b.startDate,
             endDate: b.endDate,
-            limitWan: yuanToWan(b.limitAmount),
+            limitText: formatMoneyInput(b.limitAmount, unitRef.current),
             note: b.note,
           })),
         );
@@ -131,14 +122,14 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
   const boards = useMemo(() => {
     const rows: CashBoard[] = [];
     drafts.forEach((d, i) => {
-      const limit = wanToYuan(d.limitWan);
+      const limit = parseMoneyInput(d.limitText, unit);
       if (!d.startDate || !d.endDate || d.endDate < d.startDate || limit == null || limit <= 0) return;
       rows.push({ id: i + 1, startDate: d.startDate, endDate: d.endDate, limitAmount: limit, note: d.note.trim() });
     });
     return rows;
-  }, [drafts]);
+  }, [drafts, unit]);
 
-  const opening = wanToYuan(openingWan) ?? 0;
+  const opening = parseMoneyInput(openingText, unit) ?? 0;
   const points = useMemo(() => buildPoints(lines, opening, asOf, boards), [lines, opening, asOf, boards]);
   const undated = lines.filter((l) => !l.date).length;
   const outside = lines.filter((l) => l.date && (!asOf || l.date > asOf) && !winner(l.date, boards)).length;
@@ -158,20 +149,26 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
   });
 
   function addBoard() {
-    setDrafts((rows) => [...rows, { key: `n${seq}`, startDate: '', endDate: '', limitWan: '', note: '' }]);
+    setDrafts((rows) => [...rows, { key: `n${seq}`, startDate: '', endDate: '', limitText: '', note: '' }]);
     setSeq((n) => n + 1);
     setNotice(undefined);
   }
 
+  function changeUnit(next: MoneyUnit) {
+    setOpeningText((text) => rescaleMoneyInput(text, unit, next));
+    setDrafts((rows) => rows.map((d) => ({ ...d, limitText: rescaleMoneyInput(d.limitText, unit, next) })));
+    setUnit(next);
+  }
+
   async function save() {
-    const openingYuan = wanToYuan(openingWan);
+    const openingYuan = parseMoneyInput(openingText, unit);
     if (openingYuan == null) {
-      setError('上期末余额需为大于等于 0 的数字，单位是万元');
+      setError('上期末余额需为大于等于 0 的数字');
       return;
     }
     for (const d of drafts) {
-      if (!d.startDate && !d.endDate && !d.limitWan.trim() && !d.note.trim()) continue;
-      const limit = wanToYuan(d.limitWan);
+      if (!d.startDate && !d.endDate && !d.limitText.trim() && !d.note.trim()) continue;
+      const limit = parseMoneyInput(d.limitText, unit);
       if (!d.startDate || !d.endDate) {
         setError('每条审议都要填写起止日期');
         return;
@@ -181,7 +178,7 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
         return;
       }
       if (limit == null || limit <= 0) {
-        setError('审议额度需大于 0，单位是万元');
+        setError('审议额度需大于 0');
         return;
       }
     }
@@ -193,22 +190,22 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
         opening: openingYuan,
         openingAsOf: asOf,
         boards: drafts
-          .filter((d) => d.startDate && d.endDate && wanToYuan(d.limitWan))
+          .filter((d) => d.startDate && d.endDate && (parseMoneyInput(d.limitText, unit) ?? 0) > 0)
           .map((d) => ({
             startDate: d.startDate,
             endDate: d.endDate,
-            limitAmount: wanToYuan(d.limitWan) ?? 0,
+            limitAmount: parseMoneyInput(d.limitText, unit) ?? 0,
             note: d.note.trim(),
           })),
       });
-      setOpeningWan(yuanToWan(saved.opening));
+      setOpeningText(formatMoneyInput(saved.opening, unit));
       setAsOf(saved.openingAsOf);
       setDrafts(
         saved.boards.map((b) => ({
           key: `s${b.id}`,
           startDate: b.startDate,
           endDate: b.endDate,
-          limitWan: yuanToWan(b.limitAmount),
+          limitText: formatMoneyInput(b.limitAmount, unit),
           note: b.note,
         })),
       );
@@ -226,7 +223,7 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
         <div>
           <h1 style={{ fontSize: 18, marginBottom: 2 }}>额度合规</h1>
         </div>
-        <MoneyUnitSelect value={unit} onChange={setUnit} />
+        <MoneyUnitSelect value={unit} onChange={changeUnit} />
       </div>
       <p className="flow-note">
         上期末仍在运作的本金手填。截止日之后，申购增加余额，赎回减少余额。一次审议只管自己的起止日期；日期重叠时，按起始日更晚的那次额度判定。
@@ -234,8 +231,8 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
 
       <div className="cash-form">
         <label>
-          上期末余额（万元）
-          <input className="input" inputMode="decimal" value={openingWan} onChange={(e) => setOpeningWan(e.target.value)} />
+          上期末余额（{moneyUnitName(unit)}）
+          <input className="input" inputMode="decimal" value={openingText} onChange={(e) => setOpeningText(e.target.value)} />
         </label>
         <label>
           截止日
@@ -271,9 +268,9 @@ export default function CashMandatePanel({ taskId, lines }: { taskId: number; li
             <input
               className="input"
               inputMode="decimal"
-              placeholder="额度（万元）"
-              value={d.limitWan}
-              onChange={(e) => setDrafts((rows) => rows.map((x) => (x.key === d.key ? { ...x, limitWan: e.target.value } : x)))}
+              placeholder={`额度（${moneyUnitName(unit)}）`}
+              value={d.limitText}
+              onChange={(e) => setDrafts((rows) => rows.map((x) => (x.key === d.key ? { ...x, limitText: e.target.value } : x)))}
             />
             <button
               type="button"

@@ -222,12 +222,14 @@ projectsRouter.post('/:id/uses', (req, res) => {
 projectsRouter.patch('/:id/uses/:useId', (req, res) => {
   const projectId = Number(req.params.id);
   const useId = Number(req.params.useId);
-  const name = String((req.body as { name?: string })?.name ?? '').trim();
-  if (!name) return res.status(400).json({ error: '请填写募投项目名称' });
+  const parsed = readFundUseBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
   const row = db.prepare('SELECT id FROM fund_uses WHERE id = ? AND project_id = ?').get(useId, projectId);
   if (!row) return res.status(404).json({ error: '募投项目不存在' });
   try {
-    db.prepare('UPDATE fund_uses SET name = ?, updated_at = ? WHERE id = ?').run(name, now(), useId);
+    db.prepare(
+      'UPDATE fund_uses SET name = ?, kind = ?, added_on = ?, adjusted_amount = ?, updated_at = ? WHERE id = ?',
+    ).run(parsed.name, parsed.kind, parsed.addedOn, parsed.adjustedAmount, now(), useId);
     const saved = db.prepare('SELECT * FROM fund_uses WHERE id = ?').get(useId) as Record<string, unknown>;
     res.json(toFundUse(saved));
   } catch {

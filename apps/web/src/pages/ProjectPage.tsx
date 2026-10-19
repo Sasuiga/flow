@@ -8,15 +8,7 @@ import { ListRow, ListRowHeader } from '../components/ListRow';
 import { Modal } from '../components/Modal';
 import { confirmDialog } from '../lib/confirm';
 import { formatDate } from '../lib/format';
-import { formatByUnit, MoneyUnit, moneyUnitName, MoneyUnitSelect } from '../lib/moneyUnit';
-
-function wanToYuan(text: string): number | null {
-  const raw = text.replace(/,/g, '').trim();
-  if (!raw) return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.round(n * 10000 * 100) / 100;
-}
+import { formatByUnit, formatMoneyInput, MoneyUnit, moneyUnitName, MoneyUnitSelect, parseMoneyInput, rescaleMoneyInput } from '../lib/moneyUnit';
 
 function filledChoices(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
@@ -70,14 +62,12 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | undefined>();
   const [refreshingId, setRefreshingId] = useState<number | null>(null);
-  const [useOpen, setUseOpen] = useState(false);
+  const [useEdit, setUseEdit] = useState<FundUse | 'new' | null>(null);
   const [useName, setUseName] = useState('');
   const [useKind, setUseKind] = useState<FundUseKind>('原始项目');
   const [useAddedOn, setUseAddedOn] = useState('');
-  const [useAmountWan, setUseAmountWan] = useState('');
+  const [useAmount, setUseAmount] = useState('');
   const [useBusy, setUseBusy] = useState(false);
-  const [renameTarget, setRenameTarget] = useState<FundUse | null>(null);
-  const [renameName, setRenameName] = useState('');
   const [acctEdit, setAcctEdit] = useState<ProjectAccount | 'new' | null>(null);
   const [holder, setHolder] = useState('');
   const [acctBank, setAcctBank] = useState('');
@@ -142,44 +132,35 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     }
   }
 
-  function openUseDialog() {
-    setUseName('');
-    setUseKind('原始项目');
-    setUseAddedOn('');
-    setUseAmountWan('');
-    setUseOpen(true);
+  function openUse(row: FundUse | 'new') {
+    setUseEdit(row);
+    setUseName(row === 'new' ? '' : row.name);
+    setUseKind(row === 'new' ? '原始项目' : (row.kind ?? '原始项目'));
+    setUseAddedOn(row === 'new' || row.kind !== '新增项目' ? '' : (row.addedOn ?? ''));
+    setUseAmount(row === 'new' || row.adjustedAmount == null ? '' : formatMoneyInput(row.adjustedAmount, useUnit));
   }
 
-  async function addUse() {
+  function changeUseUnit(next: MoneyUnit) {
+    setUseAmount((text) => rescaleMoneyInput(text, useUnit, next));
+    setUseUnit(next);
+  }
+
+  async function saveUse() {
     const name = useName.trim();
-    const adjustedAmount = wanToYuan(useAmountWan);
-    if (!name || !project || adjustedAmount == null) return;
+    const adjustedAmount = parseMoneyInput(useAmount, useUnit);
+    if (!name || !project || !useEdit || adjustedAmount == null || adjustedAmount <= 0) return;
     if (useKind === '新增项目' && !useAddedOn) return;
+    const body = {
+      name,
+      kind: useKind,
+      addedOn: useKind === '新增项目' ? useAddedOn : '',
+      adjustedAmount,
+    };
     setUseBusy(true);
     try {
-      await api.createFundUse(project.id, {
-        name,
-        kind: useKind,
-        addedOn: useKind === '新增项目' ? useAddedOn : '',
-        adjustedAmount,
-      });
-      setUseName('');
-      setUseOpen(false);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setUseBusy(false);
-    }
-  }
-
-  async function saveRename() {
-    const name = renameName.trim();
-    if (!name || !project || !renameTarget) return;
-    setUseBusy(true);
-    try {
-      await api.renameFundUse(project.id, renameTarget.id, name);
-      setRenameTarget(null);
+      if (useEdit === 'new') await api.createFundUse(project.id, body);
+      else await api.updateFundUse(project.id, useEdit.id, body);
+      setUseEdit(null);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -347,10 +328,10 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <h1 style={{ fontSize: 18, marginBottom: 2 }}>募投项目</h1>
             </div>
             <div className="page-header-actions">
-              <button className="primary-button" disabled={!project} onClick={openUseDialog}>
+              <button className="primary-button" disabled={!project} onClick={() => openUse('new')}>
                 <Plus size={15} /> 新建募投项目
               </button>
-              <MoneyUnitSelect value={useUnit} onChange={setUseUnit} />
+              <MoneyUnitSelect value={useUnit} onChange={changeUseUnit} />
             </div>
           </div>
 
@@ -359,7 +340,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               <h3>还没有募投项目</h3>
               <p>建好后，在募资专户里选上对应项目。</p>
               <div className="flow-empty-actions">
-                <button className="primary-button" onClick={openUseDialog}>
+                <button className="primary-button" onClick={() => openUse('new')}>
                   <Plus size={15} /> 新建募投项目
                 </button>
               </div>
@@ -382,14 +363,9 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                   <ListRow
                     key={u.id}
                     title={u.name}
+                    onClick={() => openUse(u)}
                     menuItems={[
-                      {
-                        label: '重命名',
-                        onClick: () => {
-                          setRenameName(u.name);
-                          setRenameTarget(u);
-                        },
-                      },
+                      { label: '修改', onClick: () => openUse(u) },
                       { label: '删除', danger: true, onClick: () => void removeUse(u) },
                     ]}
                   >
@@ -529,8 +505,13 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
         </Modal>
       ) : null}
 
-      {useOpen ? (
-        <Modal title="新建募投项目" onClose={() => !useBusy && setUseOpen(false)} disableDismiss={useBusy} width={440}>
+      {useEdit ? (
+        <Modal
+          title={useEdit === 'new' ? '新建募投项目' : '修改募投项目'}
+          onClose={() => !useBusy && setUseEdit(null)}
+          disableDismiss={useBusy}
+          width={440}
+        >
           <div className="field">
             <span className="field-label">名称</span>
             <input
@@ -540,7 +521,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
               autoFocus
               onChange={(e) => setUseName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void addUse();
+                if (e.key === 'Enter') void saveUse();
               }}
             />
           </div>
@@ -566,57 +547,28 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
             </div>
           ) : null}
           <div className="field">
-            <span className="field-label">调整后投资总额（万元）</span>
+            <span className="field-label">调整后投资总额（{moneyUnitName(useUnit)}）</span>
             <input
               className="input"
               inputMode="decimal"
-              value={useAmountWan}
-              placeholder="例如 12000"
-              onChange={(e) => setUseAmountWan(e.target.value)}
+              value={useAmount}
+              placeholder={useUnit === 'yuan' ? '例如 120000000' : '例如 12000'}
+              onChange={(e) => setUseAmount(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void addUse();
+                if (e.key === 'Enter') void saveUse();
               }}
             />
           </div>
           <div className="modal-actions">
-            <button className="secondary-button" disabled={useBusy} onClick={() => setUseOpen(false)}>
+            <button className="secondary-button" disabled={useBusy} onClick={() => setUseEdit(null)}>
               取消
             </button>
             <button
               className="primary-button"
-              disabled={useBusy || !useName.trim() || wanToYuan(useAmountWan) == null || (useKind === '新增项目' && !useAddedOn)}
-              onClick={() => void addUse()}
+              disabled={useBusy || !useName.trim() || (parseMoneyInput(useAmount, useUnit) ?? 0) <= 0 || (useKind === '新增项目' && !useAddedOn)}
+              onClick={() => void saveUse()}
             >
-              创建
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {renameTarget ? (
-        <Modal title="重命名" onClose={() => !useBusy && setRenameTarget(null)} disableDismiss={useBusy} width={420}>
-          <div className="field">
-            <span className="field-label">名称</span>
-            <input
-              className="input"
-              value={renameName}
-              autoFocus
-              onChange={(e) => setRenameName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void saveRename();
-              }}
-            />
-          </div>
-          <div className="modal-actions">
-            <button className="secondary-button" disabled={useBusy} onClick={() => setRenameTarget(null)}>
-              取消
-            </button>
-            <button
-              className="primary-button"
-              disabled={useBusy || !renameName.trim() || renameName.trim() === renameTarget.name}
-              onClick={() => void saveRename()}
-            >
-              保存
+              {useEdit === 'new' ? '创建' : '保存'}
             </button>
           </div>
         </Modal>

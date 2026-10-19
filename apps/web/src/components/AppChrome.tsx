@@ -1,5 +1,5 @@
 import { Bookmark, ChevronDown, ClipboardCheck, FileSpreadsheet, Home, ScrollText, Settings, ShieldCheck, FolderOpen, Waypoints } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { TaskBrief } from '@flow/shared';
 
 export type FlowView =
@@ -49,6 +49,19 @@ export function AppChrome({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | undefined>();
   const triggerRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [menuOpen]);
 
   function toggleMenu() {
     if (menuOpen) {
@@ -107,7 +120,7 @@ export function AppChrome({
           </button>
         </div>
         {menuOpen && menuPos ? (
-          <div className="ctx-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">
+          <div ref={menuRef} className="ctx-menu" style={{ left: menuPos.left, top: menuPos.top }} role="menu">
             <div className="ctx-menu-title">最近任务</div>
             {recentTasks.length === 0 ? <div className="ctx-menu-empty">还没有任务</div> : null}
             {recentTasks.map((t) => (
