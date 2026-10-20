@@ -260,6 +260,8 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
           </div>
         ) : (
           <>
+            <ParseProgress files={detail.files} />
+            <ParseBoards files={detail.files} />
             <ListRowHeader
               withMenu
               cols={[
@@ -322,7 +324,6 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                 </div>
               );
             })}
-            <ParseBoards files={detail.files} />
           </>
         )
       ) : null}
@@ -456,6 +457,43 @@ function AccountCoverage({ accounts, files }: { accounts: ProjectAccount[]; file
         </div>
       ) : null}
     </section>
+  );
+}
+
+function ParseProgress({ files }: { files: BankFile[] }) {
+  if (files.length === 0) return null;
+  const count = (status: FileStatus) => files.filter((f) => f.status === status).length;
+  const done = count('done') + count('needs_review');
+  const parsing = count('parsing');
+  const pending = count('scanned');
+  const failed = count('error');
+  const ratio = files.length === 0 ? 0 : done / files.length;
+  const current = files.find((f) => f.status === 'parsing');
+  const step = current?.progress?.find((s) => s.state === 'run' || s.state === 'fail');
+  return (
+    <div className="parse-progress">
+      <div className="parse-progress-head">
+        <b>解析进度</b>
+        <span>
+          {done} / {files.length}
+        </span>
+      </div>
+      <div className="parse-progress-track" role="progressbar" aria-valuenow={done} aria-valuemin={0} aria-valuemax={files.length}>
+        <span style={{ width: `${Math.round(ratio * 100)}%` }} />
+      </div>
+      <div className="parse-progress-meta">
+        {pending > 0 ? <span>待解析 {pending}</span> : null}
+        {parsing > 0 ? <span>解析中 {parsing}</span> : null}
+        {done > 0 ? <span>已完成 {done}</span> : null}
+        {failed > 0 ? <span>错误 {failed}</span> : null}
+      </div>
+      {current ? (
+        <div className="parse-progress-now" title={current.relPath}>
+          {current.relPath}
+          {step ? ` · ${step.label}${step.detail ? ` ${step.detail}` : ''}` : ''}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

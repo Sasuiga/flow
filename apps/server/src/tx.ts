@@ -12,7 +12,7 @@ import { Router } from 'express';
 import { db } from './db.js';
 import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
 import { bulkCategory, setTxCategory } from './categorize.js';
-import { TaskListItem, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
+import { TaskListItem, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
 export function toTxRow(r: Record<string, unknown>): TxRow {
   return {
@@ -63,6 +63,8 @@ LEFT JOIN tx_watch w ON w.transaction_id = t.id`;
 
 /** 与交易列表「开户主体」列相同：登记的账户主体优先，否则用流水上的户名 */
 const HOLDER_SQL = `COALESCE(NULLIF(TRIM(fua.holder), ''), NULLIF(TRIM(f.account_name), ''))`;
+const FUND_USE_NAME_SQL = `CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END`;
+const UNASSIGNED_FUND_USE_SQL = `fu.id IS NULL AND IFNULL(fua.use_role, '') != '${TRANSIT_USE_ROLE}'`;
 
 export const BASE_SELECT = `
 SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
@@ -71,7 +73,7 @@ SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direct
        COALESCE(w.marked, 0) AS watched,
        f.rel_path AS file_name, f.bank, f.account_no,
        ${HOLDER_SQL} AS holder,
-       fu.id AS fund_use_id, fu.name AS fund_use_name,
+       fu.id AS fund_use_id, ${FUND_USE_NAME_SQL} AS fund_use_name,
        tk.name AS task_name, p.name AS project_name, c.name AS client_name
 ${TX_FROM}`;
 
@@ -272,11 +274,16 @@ transactionsRouter.get('/options', (req, res) => {
   ).map((r) => ({ id: Number(r.id), name: r.name }));
   const unassigned = db
     .prepare(
-      `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, "fu.id IS NULL AND f.account_no IS NOT NULL AND TRIM(f.account_no) != ''")} LIMIT 1`,
+      `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, `${UNASSIGNED_FUND_USE_SQL} AND f.account_no IS NOT NULL AND TRIM(f.account_no) != ''`)} LIMIT 1`,
+    )
+    .get(...useWhere.args);
+  const transit = db
+    .prepare(
+      `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, `fua.use_role = '${TRANSIT_USE_ROLE}'`)} LIMIT 1`,
     )
     .get(...useWhere.args);
 
-  const options: TxOptions = { tasks, banks, holders, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned };
+  const options: TxOptions = { tasks, banks, holders, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned, hasTransitFundUse: !!transit };
   res.json(options);
 });
 
@@ -309,7 +316,8 @@ function buildWhere(
     where.push('f.account_no LIKE ?');
     args.push(`%${q.accountNo}%`);
   }
-  if (!skip.has('fundUse') && q.fundUse === '__none__') where.push('fu.id IS NULL');
+  if (!skip.has('fundUse') && q.fundUse === '__none__') where.push(UNASSIGNED_FUND_USE_SQL);
+  else if (!skip.has('fundUse') && q.fundUse === '__transit__') where.push(`fua.use_role = '${TRANSIT_USE_ROLE}'`);
   else if (has('fundUse')) {
     where.push('fu.id = ?');
     args.push(Number(q.fundUse));

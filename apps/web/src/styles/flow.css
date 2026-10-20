@@ -461,6 +461,17 @@ select:focus-visible {
   color: var(--ui-text);
 }
 
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field-head .report-unit {
+  margin-top: 0;
+}
+
 .field-hint {
   color: var(--ui-faint);
   font-size: 12px;
@@ -1355,17 +1366,56 @@ select.input {
 }
 
 .tx-compare {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
-  gap: 12px;
+  display: flex;
   align-items: stretch;
   height: calc(100vh - 210px);
   min-height: 420px;
+  overflow: hidden;
+}
+
+.tx-compare-split {
+  flex: 0 0 14px;
+  margin: 0 2px;
+  cursor: col-resize;
+  touch-action: none;
+  position: relative;
+}
+
+.tx-compare-split::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #d5d8e2;
+}
+
+.tx-compare-split:hover::before,
+.tx-compare-split.dragging::before {
+  width: 3px;
+  background: var(--ui-primary);
+}
+
+.tx-compare-split.dragging {
+  cursor: col-resize;
+}
+
+.tx-compare.is-split-drag {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.tx-compare.is-split-drag iframe {
+  pointer-events: none;
 }
 
 .tx-compare-left {
   position: relative;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: 320px;
   min-height: 0;
   overflow: hidden;
   display: flex;
@@ -1443,7 +1493,8 @@ select.input {
 }
 
 .tx-compare-right {
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: 280px;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1777,8 +1828,69 @@ select.input {
   font-size: 12px;
 }
 
+.parse-progress {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-panel);
+  box-shadow: 0 8px 18px rgba(20, 24, 40, 0.06);
+}
+
+.parse-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.parse-progress-head b {
+  font-size: 14px;
+}
+
+.parse-progress-head span,
+.parse-progress-meta {
+  color: var(--ui-faint);
+  font-size: 12px;
+}
+
+.parse-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ui-panel-subtle, #f3f4f8);
+  overflow: hidden;
+}
+
+.parse-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ui-primary);
+}
+
+.parse-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+}
+
+.parse-progress-now {
+  margin-top: 6px;
+  color: var(--ui-primary);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .parse-board {
-  margin-top: 16px;
+  margin-bottom: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;

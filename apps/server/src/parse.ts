@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { getSettings } from './settings.js';
-import { extractJson, llmChat } from './ai.js';
+import { extractJson, llmChat, probeLLM } from './ai.js';
 import { classifyTask } from './categorize.js';
 import { scanPdfFiles } from './fsutil.js';
 
@@ -719,20 +719,37 @@ function finishError(fileId: number, msg: string): ParseOutcome {
 
 /* ---------- 解析队列（LLM 并发 = settings.llmConcurrency，§3.2 默认 2） ---------- */
 
+const PROBE_STEP = (state: 'run' | 'fail', detail: string) =>
+  JSON.stringify([{ id: 'read', label: '连接测试', state, detail }]);
+
 export class ParseQueue {
   private queue: number[] = [];
   private inflight = new Set<number>();
   private workerStarted = false;
+  /** 这一波解析共用一次连接测试。队列清空后作废，下一波重新测。 */
+  private batchProbe: Promise<{ ok: boolean; detail: string }> | null = null;
 
   /** 入队（幂等：已排队/解析中则跳过）。返回是否入队 */
   enqueue(fileId: number): boolean {
     if (this.inflight.has(fileId) || this.queue.includes(fileId)) return false;
     this.queue.push(fileId);
+    if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(fileId)) {
+      setFile(fileId, {
+        status: 'parsing',
+        error: null,
+        progress: PROBE_STEP('run', '正在确认模型可达'),
+      });
+    }
     return true;
   }
 
   get pending(): number {
     return this.queue.length + this.inflight.size;
+  }
+
+  /** 本进程队列里的文件。启动自愈时不要把这些刚入队的行打回待解析。 */
+  queuedIds(): number[] {
+    return [...this.queue, ...this.inflight];
   }
 
   /** 服务启动时调一次：常驻轮询（新任务/新文件随时入队） */
@@ -742,8 +759,46 @@ export class ParseQueue {
     void this.pump();
   }
 
+  /** 本波第一次开跑前测一次。同一波里后进来的文件沿用这次结果。 */
+  private probeModel(): Promise<{ ok: boolean; detail: string }> {
+    if (!this.batchProbe) {
+      this.batchProbe = (async () => {
+        try {
+          const s = getSettings();
+          console.log(`[parse] 解析前连接测试 ${s.llmBase} 模型 ${s.llmModel || '（未填）'}`);
+          const r = await probeLLM(s.llmBase, s.llmModel, s.llmExtraHeader);
+          console.log(`[parse] 连接测试${r.ok ? '通过' : '未通过'}：${r.detail}`);
+          return { ok: r.ok, detail: r.detail };
+        } catch (e) {
+          const detail = (e as Error).message;
+          console.log(`[parse] 连接测试未通过：${detail}`);
+          return { ok: false, detail };
+        }
+      })();
+    }
+    return this.batchProbe;
+  }
+
   private async pump(): Promise<void> {
     for (;;) {
+      if (this.queue.length === 0 && this.inflight.size === 0) this.batchProbe = null;
+      if (this.queue.length > 0 && this.inflight.size === 0) {
+        const probe = await this.probeModel();
+        if (!probe.ok) {
+          const ids = this.queue.splice(0, this.queue.length);
+          const msg = `模型不可达，未开始解析：${probe.detail}`;
+          const progress = PROBE_STEP('fail', probe.detail);
+          for (const id of ids) {
+            if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) {
+              setFile(id, { status: 'error', error: msg, progress });
+            }
+          }
+          console.log(`[parse] 连接测试未通过，${ids.length} 份未开始解析`);
+          this.batchProbe = null;
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+      }
       const cap = Math.min(4, Math.max(1, getSettings().llmConcurrency));
       while (this.inflight.size < cap && this.queue.length > 0) {
         const fileId = this.queue.shift()!;
@@ -751,6 +806,7 @@ export class ParseQueue {
         console.log(`[parse] 开始解析 file#${fileId}（并发 ${this.inflight.size}/${cap}）`);
         void this.runOne(fileId).finally(() => {
           this.inflight.delete(fileId);
+          if (this.inflight.size === 0 && this.queue.length === 0) this.batchProbe = null;
         });
       }
       await new Promise((r) => setTimeout(r, 1500));
@@ -774,7 +830,12 @@ export const parseQueue = new ParseQueue();
 
 /** 启动自愈：被打断的 parsing 复位 scanned，并自动开跑未解析的文件（M2 验收：放 PDF 自动出交易表） */
 export function autoParsePending(): void {
-  db.prepare(`UPDATE files SET status = 'scanned' WHERE status = 'parsing'`).run();
+  const active = new Set(parseQueue.queuedIds());
+  const stuck = db.prepare(`SELECT id FROM files WHERE status = 'parsing'`).all() as { id: number }[];
+  const reset = db.prepare(`UPDATE files SET status = 'scanned', progress = NULL WHERE id = ?`);
+  for (const row of stuck) {
+    if (!active.has(row.id)) reset.run(row.id);
+  }
   const pending = (
     db.prepare(`SELECT id FROM files WHERE status = 'scanned' AND tx_count = 0`).all() as { id: number }[]
   ).map((r) => r.id);

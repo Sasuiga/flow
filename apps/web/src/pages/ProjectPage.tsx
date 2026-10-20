@@ -1,7 +1,7 @@
 import { ChevronRight, Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { AutoComplete } from 'antd';
-import { CreateEntityInput, FundUse, FundUseKind, ProjectAccount, ProjectView, TaskView } from '@flow/shared';
+import { CreateEntityInput, FundUse, FundUseKind, ProjectAccount, ProjectView, TaskView, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
 import { api, ProjectDetail as ProjectDetailData } from '../api';
 import { CreateDialog } from '../components/CreateDialog';
 import { ListRow, ListRowHeader } from '../components/ListRow';
@@ -190,7 +190,9 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
     setAcctBank(row === 'new' ? '' : row.bank);
     setAcctNo(row === 'new' ? '' : row.accountNo);
     setOpenedOn(row === 'new' ? '' : row.openedOn ?? '');
-    setAcctUseId(row === 'new' || row.fundUseId == null ? '' : String(row.fundUseId));
+    setAcctUseId(
+      row === 'new' ? '' : row.useRole === TRANSIT_USE_ROLE ? TRANSIT_USE_ROLE : row.fundUseId == null ? '' : String(row.fundUseId),
+    );
   }
 
   async function saveAccount() {
@@ -200,7 +202,8 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
       bank: acctBank.trim(),
       accountNo: acctNo.trim(),
       openedOn,
-      fundUseId: acctUseId ? Number(acctUseId) : null,
+      fundUseId: acctUseId && acctUseId !== TRANSIT_USE_ROLE ? Number(acctUseId) : null,
+      useRole: acctUseId === TRANSIT_USE_ROLE ? TRANSIT_USE_ROLE : '',
     };
     if (!body.holder || !body.bank || !body.accountNo || !body.openedOn) return;
     setUseBusy(true);
@@ -433,7 +436,9 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
                   <span className="acct-col-bank" title={a.bank}>{a.bank}</span>
                   <span className="acct-col-no" title={a.accountNo}>{a.accountNo}</span>
                   <span className="acct-col-date">{a.openedOn || '—'}</span>
-                  <span className="acct-col-use" title={a.fundUse || undefined}>{a.fundUse || '—'}</span>
+                  <span className="acct-col-use" title={a.useRole === TRANSIT_USE_ROLE ? TRANSIT_FUND_USE_LABEL : a.fundUse || undefined}>
+                    {a.useRole === TRANSIT_USE_ROLE ? TRANSIT_FUND_USE_LABEL : a.fundUse || '—'}
+                  </span>
                 </ListRow>
               ))}
             </div>
@@ -484,6 +489,7 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
             <span className="field-label">募投项目</span>
             <select className="input" value={acctUseId} onChange={(e) => setAcctUseId(e.target.value)}>
               <option value="">不挂</option>
+              <option value={TRANSIT_USE_ROLE}>{TRANSIT_FUND_USE_LABEL}</option>
               {(detail?.fundUses ?? []).map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
@@ -548,7 +554,10 @@ export function ProjectPage({ projectId, onBackToClient, onOpenTask }: ProjectPa
             </div>
           ) : null}
           <div className="field">
-            <span className="field-label">调整后投资总额（{moneyUnitName(useUnit)}）</span>
+            <div className="field-head">
+              <span className="field-label">调整后投资总额</span>
+              <MoneyUnitSelect value={useUnit} onChange={changeUseUnit} />
+            </div>
             <input
               className="input"
               inputMode="decimal"

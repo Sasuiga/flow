@@ -3,11 +3,11 @@
  *
  * 只读交易上的分类，现算现给。不写入 flow_analyses，改分类不会让资金流向重算。
  * 临时补流：转出是补流，同分类的转入当作转回，差额是尚未归还。
- * 现金管理：转出是存放或申购，转入是赎回或到期，差额是仍在运作。投资收益单独列出，不冲减本金。
+ * 现金管理：转出是购买，转入是赎回，按募资专户汇总。投资收益单独列出，不进购买和赎回。
  * 实施中置换：转出是用募集资金置换实施期间已投入的资金，同分类转入从已置换金额里扣掉。
  */
 import { db } from './db.js';
-import { CategoryFocus, CategoryFocusLine, CategoryFocusParty } from '@flow/shared';
+import { CategoryFocus, CategoryFocusLine, CategoryFocusParty, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
 
 const FOCUS = ['临时补流', '现金管理', '实施中置换'] as const;
 
@@ -60,14 +60,23 @@ function summarize(category: (typeof FOCUS)[number], lines: CategoryFocusLine[])
       inAmount += line.amount;
       inCount++;
     }
+    const tail = line.accountNo ? line.accountNo.slice(-4) : '';
+    const accountLabel = line.bank && tail ? `${line.bank} · ${tail}` : line.bank || line.accountNo || '';
     const dedicated = category === '实施中置换';
-    const name = dedicated ? line.holder || line.bank || '（未识别专户）' : line.counterparty || '（无对手方）';
-    const accountNo = dedicated
-      ? line.holder
-        ? [line.bank, line.accountNo].filter(Boolean).join(' · ')
-        : line.accountNo || ''
-      : line.counterpartyAccount || '';
-    const key = dedicated ? `${line.bank ?? ''}\n${line.accountNo ?? ''}` : `${name}\n${accountNo}`;
+    const byAccount = category === '现金管理' || dedicated;
+    const name = category === '现金管理'
+      ? accountLabel || line.holder || '（未识别专户）'
+      : dedicated
+        ? line.holder || line.bank || '（未识别专户）'
+        : line.counterparty || '（无对手方）';
+    const accountNo = category === '现金管理'
+      ? line.holder || ''
+      : dedicated
+        ? line.holder
+          ? [line.bank, line.accountNo].filter(Boolean).join(' · ')
+          : line.accountNo || ''
+        : line.counterpartyAccount || '';
+    const key = byAccount ? `${line.bank ?? ''}\n${line.accountNo ?? ''}` : `${name}\n${accountNo}`;
     let party = parties.get(key);
     if (!party) {
       party = {
@@ -106,7 +115,8 @@ export function categoryFocus(taskId: number): { views: CategoryFocus[] } {
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account, t.category,
-              f.bank, f.account_no, fu.name AS fund_use,
+              f.bank, f.account_no,
+              CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END AS fund_use,
               (SELECT fua2.holder
                  FROM fund_use_accounts fua2
                 WHERE fua2.project_id = tk.project_id

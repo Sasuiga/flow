@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS fund_use_accounts (
   account_no TEXT NOT NULL,
   account_key TEXT NOT NULL DEFAULT '',
   opened_on TEXT NOT NULL DEFAULT '',
+  use_role TEXT NOT NULL DEFAULT '',
   fund_use_id INTEGER REFERENCES fund_uses(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
@@ -255,6 +256,7 @@ for (const [col, ddl] of [
   ['account_key', `ALTER TABLE fund_use_accounts ADD COLUMN account_key TEXT NOT NULL DEFAULT ''`],
   ['opened_on', `ALTER TABLE fund_use_accounts ADD COLUMN opened_on TEXT NOT NULL DEFAULT ''`],
   ['created_at', `ALTER TABLE fund_use_accounts ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`],
+  ['use_role', `ALTER TABLE fund_use_accounts ADD COLUMN use_role TEXT NOT NULL DEFAULT ''`],
 ] as const) {
   if (!tableCols('fund_use_accounts').includes(col)) db.exec(ddl);
 }

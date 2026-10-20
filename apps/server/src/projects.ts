@@ -9,7 +9,7 @@ import { cashLots, saveCashSplit } from './cashLots.js';
 import { getCashMandate, saveCashMandate } from './cashMandate.js';
 import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
-import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView } from '@flow/shared';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView, TRANSIT_USE_ROLE } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
@@ -134,6 +134,7 @@ function toProjectAccount(r: Record<string, unknown>): ProjectAccount {
     accountNo: String(r.account_no),
     fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
     fundUse: (r.fund_use_name as string | null) || undefined,
+    useRole: r.use_role === TRANSIT_USE_ROLE ? TRANSIT_USE_ROLE : undefined,
     openedOn: String(r.opened_on ?? '') || undefined,
   };
 }
@@ -146,10 +147,20 @@ function listProjectAccounts(projectId: number): ProjectAccount[] {
          FROM fund_use_accounts fua
          LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
          WHERE fua.project_id = ?
-         ORDER BY fua.bank, fua.account_no`,
+         ORDER BY CASE WHEN fua.opened_on = '' THEN 1 ELSE 0 END, fua.opened_on, fua.bank, fua.account_no`,
       )
       .all(projectId) as Record<string, unknown>[]
   ).map(toProjectAccount);
+}
+
+function readAssignment(
+  projectId: number,
+  body: { fundUseId?: unknown; useRole?: unknown },
+): { fundUseId: number | null; useRole: string } | { error: string } {
+  if (body.useRole === TRANSIT_USE_ROLE) return { fundUseId: null, useRole: TRANSIT_USE_ROLE };
+  const fundUseId = resolveFundUseId(projectId, body.fundUseId);
+  if (typeof fundUseId === 'object' && fundUseId) return fundUseId;
+  return { fundUseId, useRole: '' };
 }
 
 function resolveFundUseId(projectId: number, raw: unknown): number | null | { error: string } {
@@ -251,8 +262,8 @@ projectsRouter.post('/:id/accounts', (req, res) => {
   if (!project) return res.status(404).json({ error: '项目不存在' });
   const parsed = readAccountBody(req.body);
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-  const fundUseId = resolveFundUseId(projectId, (req.body as { fundUseId?: unknown })?.fundUseId);
-  if (typeof fundUseId === 'object' && fundUseId) return res.status(400).json({ error: fundUseId.error });
+  const assignment = readAssignment(projectId, (req.body ?? {}) as { fundUseId?: unknown; useRole?: unknown });
+  if ('error' in assignment) return res.status(400).json({ error: assignment.error });
   const taken = db
     .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ?')
     .get(projectId, parsed.key);
@@ -260,10 +271,10 @@ projectsRouter.post('/:id/accounts', (req, res) => {
   try {
     const r = db
       .prepare(
-        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, opened_on, fund_use_id, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO fund_use_accounts(project_id, holder, bank, account_no, account_key, opened_on, use_role, fund_use_id, created_at, updated_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, fundUseId, now(), now());
+      .run(projectId, parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, assignment.useRole, assignment.fundUseId, now(), now());
     const row = db
       .prepare(
         `SELECT fua.*, fu.name AS fund_use_name FROM fund_use_accounts fua
@@ -285,8 +296,8 @@ projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
   if (!existing) return res.status(404).json({ error: '募资专户不存在' });
   const parsed = readAccountBody(req.body);
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
-  const fundUseId = resolveFundUseId(projectId, (req.body as { fundUseId?: unknown })?.fundUseId);
-  if (typeof fundUseId === 'object' && fundUseId) return res.status(400).json({ error: fundUseId.error });
+  const assignment = readAssignment(projectId, (req.body ?? {}) as { fundUseId?: unknown; useRole?: unknown });
+  if ('error' in assignment) return res.status(400).json({ error: assignment.error });
   const taken = db
     .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ? AND id != ?')
     .get(projectId, parsed.key, accountId);
@@ -294,9 +305,9 @@ projectsRouter.patch('/:id/accounts/:accountId', (req, res) => {
   try {
     db.prepare(
       `UPDATE fund_use_accounts
-       SET holder = ?, bank = ?, account_no = ?, account_key = ?, opened_on = ?, fund_use_id = ?, updated_at = ?
+       SET holder = ?, bank = ?, account_no = ?, account_key = ?, opened_on = ?, use_role = ?, fund_use_id = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, fundUseId, now(), accountId);
+    ).run(parsed.holder, parsed.bank, parsed.accountNo, parsed.key, parsed.openedOn, assignment.useRole, assignment.fundUseId, now(), accountId);
   } catch {
     return res.status(409).json({ error: '已有这个账号' });
   }
@@ -321,20 +332,21 @@ projectsRouter.put('/:id/accounts', (req, res) => {
   const projectId = Number(req.params.id);
   const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
   if (!project) return res.status(404).json({ error: '项目不存在' });
-  const body = (req.body ?? {}) as { accountNo?: string; fundUseId?: number | null | '' };
+  const body = (req.body ?? {}) as { accountNo?: string; fundUseId?: number | null | ''; useRole?: unknown };
   const key = normAccountNo(body.accountNo);
   if (!key) return res.status(400).json({ error: '缺少账号' });
-  const fundUseId = body.fundUseId == null || body.fundUseId === '' ? null : Number(body.fundUseId);
-  if (fundUseId != null && !Number.isFinite(fundUseId)) return res.status(400).json({ error: '募投项目不存在' });
-  if (fundUseId != null) {
-    const use = db.prepare('SELECT id FROM fund_uses WHERE id = ? AND project_id = ?').get(fundUseId, projectId);
-    if (!use) return res.status(400).json({ error: '募投项目不存在' });
-  }
+  const assignment = readAssignment(projectId, body);
+  if ('error' in assignment) return res.status(400).json({ error: assignment.error });
   const row = db
     .prepare('SELECT id FROM fund_use_accounts WHERE project_id = ? AND account_key = ?')
     .get(projectId, key) as { id: number } | undefined;
   if (!row) return res.status(404).json({ error: '请先新建募资专户' });
-  db.prepare('UPDATE fund_use_accounts SET fund_use_id = ?, updated_at = ? WHERE id = ?').run(fundUseId, now(), row.id);
+  db.prepare('UPDATE fund_use_accounts SET use_role = ?, fund_use_id = ?, updated_at = ? WHERE id = ?').run(
+    assignment.useRole,
+    assignment.fundUseId,
+    now(),
+    row.id,
+  );
   res.json({ ok: true });
 });
 

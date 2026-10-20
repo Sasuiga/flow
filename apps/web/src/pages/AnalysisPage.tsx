@@ -694,15 +694,16 @@ function focusCopy(category: CategoryFocus['category'], netOut: number): { backL
   return {
     backLabel: '转入',
     netLabel: netOut > 0.005 ? '仍在运作' : netOut < -0.005 ? '收回超出' : '已轧平',
-    note: '转出是存放或申购，转入是赎回或到期。投资收益单独列出，不冲减仍在运作的本金。',
+    note: '购买是存放或申购，赎回是到期收回。按募资专户汇总报告期内各账户的发生额。',
   };
 }
 
 function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
   const { backLabel, netLabel, note } = focusCopy(view.category, view.netOut);
+  const cash = view.category === '现金管理';
+  const swap = view.category === '实施中置换';
   const [summaryUnit, setSummaryUnit] = useState<MoneyUnit>('yuan');
   const [detailUnit, setDetailUnit] = useState<MoneyUnit>('yuan');
-  const [incomeUnit, setIncomeUnit] = useState<MoneyUnit>('yuan');
   return (
     <>
       {view.category === '现金管理' && taskId ? <CashMandatePanel taskId={taskId} lines={view.lines} /> : null}
@@ -715,34 +716,39 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
         </div>
         <p className="flow-note">{note}</p>
         <div className="focus-stats">
-          <div>
-            <span>转出</span>
-            <b>{formatByUnit(view.outAmount, summaryUnit)}</b>
-            <em>{view.outCount} 笔</em>
-          </div>
-          <div>
-            <span>{backLabel}</span>
-            <b>{formatByUnit(view.inAmount, summaryUnit)}</b>
-            <em>{view.inCount} 笔</em>
-          </div>
-          <div>
-            <span>{netLabel}</span>
-            <b>{formatByUnit(Math.abs(view.netOut), summaryUnit)}</b>
-          </div>
-          {view.incomeAmount != null ? (
+          {swap ? (
             <div>
-              <span>投资收益</span>
-              <b>{formatByUnit(view.incomeAmount, summaryUnit)}</b>
-              <em>{view.incomeCount} 笔</em>
+              <span>已置换</span>
+              <b>{formatByUnit(Math.max(view.netOut, 0), summaryUnit)}</b>
+              <em>{view.outCount + view.inCount} 笔</em>
             </div>
-          ) : null}
+          ) : (
+            <>
+              <div>
+                <span>{cash ? '购买' : '转出'}</span>
+                <b>{formatByUnit(view.outAmount, summaryUnit)}</b>
+                <em>{view.outCount} 笔</em>
+              </div>
+              <div>
+                <span>{cash ? '赎回' : backLabel}</span>
+                <b>{formatByUnit(view.inAmount, summaryUnit)}</b>
+                <em>{view.inCount} 笔</em>
+              </div>
+              {cash ? null : (
+                <div>
+                  <span>{netLabel}</span>
+                  <b>{formatByUnit(Math.abs(view.netOut), summaryUnit)}</b>
+                </div>
+              )}
+            </>
+          )}
         </div>
         <table className="flow-sheet">
           <thead>
             <tr>
-              <th>{view.category === '实施中置换' ? '募资专户' : '对手方'}</th>
-              <th>转出</th>
-              <th>{backLabel}</th>
+              <th>{view.category === '实施中置换' || cash ? '募资专户' : '对手方'}</th>
+              <th>{cash ? '购买' : '转出'}</th>
+              <th>{cash ? '赎回' : backLabel}</th>
               <th>净额</th>
               <th>起止</th>
             </tr>
@@ -770,19 +776,226 @@ function FocusView({ view, taskId }: { view: CategoryFocus; taskId?: number }) {
           </div>
           <MoneyUnitSelect value={detailUnit} onChange={setDetailUnit} />
         </div>
-        <FocusLines lines={view.lines} unit={detailUnit} />
+        {view.category === '现金管理' ? (
+          <CashDetailLines lines={view.lines} unit={detailUnit} />
+        ) : (
+          <FocusLines lines={view.lines} unit={detailUnit} />
+        )}
       </section>
-      {view.incomeLines && view.incomeLines.length > 0 ? (
-        <section className="page-section">
-          <div className="page-header">
-            <div>
-              <h1 style={{ fontSize: 18, marginBottom: 2 }}>投资收益</h1>
-            </div>
-            <MoneyUnitSelect value={incomeUnit} onChange={setIncomeUnit} />
-          </div>
-          <FocusLines lines={view.incomeLines} unit={incomeUnit} />
-        </section>
-      ) : null}
+    </>
+  );
+}
+
+function accountKey(line: CategoryFocus['lines'][number]): string {
+  return `${line.bank ?? ''}\n${line.accountNo ?? ''}`;
+}
+
+function CashDetailLines({ lines, unit }: { lines: CategoryFocus['lines']; unit: MoneyUnit }) {
+  const [open, setOpen] = useState<Set<number>>(() => new Set());
+  const [holder, setHolder] = useState('');
+  const [account, setAccount] = useState('');
+  const [date, setDate] = useState('');
+  const [direction, setDirection] = useState<'' | 'in' | 'out'>('');
+  const [amount, setAmount] = useState('');
+  function toggle(id: number) {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  const holders = useMemo(
+    () => [...new Set(lines.map((line) => line.holder || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh')),
+    [lines],
+  );
+  const accounts = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const line of lines) {
+      if (holder && (line.holder || '') !== holder) continue;
+      const key = accountKey(line);
+      if (!map.has(key)) map.set(key, ownAccount(line));
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], 'zh'));
+  }, [lines, holder]);
+  const dates = useMemo(() => {
+    const set = new Set<string>();
+    for (const line of lines) {
+      if (holder && (line.holder || '') !== holder) continue;
+      if (account && accountKey(line) !== account) continue;
+      if (line.date) set.add(line.date);
+    }
+    return [...set].sort();
+  }, [lines, holder, account]);
+  const amounts = useMemo(() => {
+    const set = new Set<number>();
+    for (const line of lines) {
+      if (holder && (line.holder || '') !== holder) continue;
+      if (account && accountKey(line) !== account) continue;
+      if (date && (line.date || '') !== date) continue;
+      if (direction && line.direction !== direction) continue;
+      set.add(line.amount);
+    }
+    return [...set].sort((a, b) => b - a);
+  }, [lines, holder, account, date, direction]);
+  const shown = lines.filter((line) => {
+    if (holder && (line.holder || '') !== holder) return false;
+    if (account && accountKey(line) !== account) return false;
+    if (date && (line.date || '') !== date) return false;
+    if (direction && line.direction !== direction) return false;
+    if (amount !== '' && line.amount !== Number(amount)) return false;
+    return true;
+  });
+  const filtering = !!(holder || account || date || direction || amount);
+  function clearFilters() {
+    setHolder('');
+    setAccount('');
+    setDate('');
+    setDirection('');
+    setAmount('');
+  }
+  return (
+    <>
+      <div className="lot-filters">
+        <select
+          className="input filter-control"
+          value={holder}
+          onChange={(e) => {
+            setHolder(e.target.value);
+            setAccount('');
+            setDate('');
+            setAmount('');
+          }}
+        >
+          <option value="">全部购买主体</option>
+          {holders.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select
+          className="input filter-control"
+          value={account}
+          onChange={(e) => {
+            setAccount(e.target.value);
+            setDate('');
+            setAmount('');
+          }}
+        >
+          <option value="">全部购买账户</option>
+          {accounts.map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="input filter-control"
+          value={date}
+          onChange={(e) => {
+            setDate(e.target.value);
+            setAmount('');
+          }}
+        >
+          <option value="">全部日期</option>
+          {dates.map((day) => (
+            <option key={day} value={day}>
+              {day}
+            </option>
+          ))}
+        </select>
+        <select
+          className="input filter-control"
+          value={direction}
+          onChange={(e) => {
+            setDirection(e.target.value as '' | 'in' | 'out');
+            setAmount('');
+          }}
+        >
+          <option value="">全部方向</option>
+          <option value="out">购买</option>
+          <option value="in">赎回</option>
+        </select>
+        <select className="input filter-control" value={amount} onChange={(e) => setAmount(e.target.value)}>
+          <option value="">全部金额</option>
+          {amounts.map((value) => (
+            <option key={value} value={String(value)}>
+              {formatByUnit(value, unit)}
+            </option>
+          ))}
+        </select>
+        {filtering ? (
+          <button className="filter-reset" onClick={clearFilters}>
+            清除
+          </button>
+        ) : null}
+      </div>
+    <table className="flow-sheet">
+      <thead>
+        <tr>
+          <th>购买主体</th>
+          <th>购买账户</th>
+          <th>日期</th>
+          <th>方向</th>
+          <th>金额</th>
+        </tr>
+      </thead>
+      <tbody>
+        {shown.length === 0 ? (
+          <tr>
+            <td colSpan={5} className="report-muted">
+              没有符合筛选的记录
+            </td>
+          </tr>
+        ) : null}
+        {shown.map((line) => {
+          const opened = open.has(line.id);
+          const buy = line.direction === 'out';
+          return (
+            <Fragment key={line.id}>
+              <tr className={`hit${opened ? ' open' : ''}`} onClick={() => toggle(line.id)}>
+                <td>{line.holder || '—'}</td>
+                <td>{ownAccount(line)}</td>
+                <td>{line.date || '—'}</td>
+                <td className={buy ? 'out' : 'in'}>{buy ? '购买' : '赎回'}</td>
+                <td>{formatByUnit(line.amount, unit)}</td>
+              </tr>
+              {opened ? (
+                <tr className="flow-lines-row">
+                  <td colSpan={5}>
+                    <table className="flow-lines">
+                      <thead>
+                        <tr>
+                          <th>日期</th>
+                          <th>方向</th>
+                          <th>金额</th>
+                          <th>摘要</th>
+                          <th>对手方</th>
+                          <th>对手账号</th>
+                          <th>募投项目</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td>{line.date || '—'}</td>
+                          <td className={line.direction === 'in' ? 'in' : 'out'}>{line.direction === 'in' ? '收' : '支'}</td>
+                          <td>{formatByUnit(line.amount, unit)}</td>
+                          <td>{line.summary || '—'}</td>
+                          <td>{line.counterparty || '—'}</td>
+                          <td>{line.counterpartyAccount || '—'}</td>
+                          <td>{line.fundUse || '—'}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
     </>
   );
 }

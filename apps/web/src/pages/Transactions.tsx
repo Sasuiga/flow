@@ -1,7 +1,7 @@
 import { Bookmark, Columns2, FilterX, Inbox } from 'lucide-react';
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Table } from 'antd';
-import { BankFile, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
+import { BankFile, TRANSIT_FUND_USE_LABEL, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { Modal } from '../components/Modal';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
@@ -97,6 +97,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [bulkBusy, setBulkBusy] = useState(false);
   const [compareFile, setCompareFile] = useState<BankFile | null>(null);
   const [comparePick, setComparePick] = useState(false);
+  const [split, setSplit] = useState(0.52);
+  const splitDrag = useRef(false);
   const [taskFiles, setTaskFiles] = useState<BankFile[]>([]);
   const [filesBusy, setFilesBusy] = useState(false);
   const [localUrl, setLocalUrl] = useState<string | null>(null);
@@ -155,7 +157,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           if (q.fundUse === '__none__' && !opts.hasUnassignedFundUse) {
             next.fundUse = undefined;
             changed = true;
-          } else if (q.fundUse && q.fundUse !== '__none__' && !opts.fundUses.some((u) => String(u.id) === q.fundUse)) {
+          } else if (q.fundUse === '__transit__' && !opts.hasTransitFundUse) {
+            next.fundUse = undefined;
+            changed = true;
+          } else if (q.fundUse && q.fundUse !== '__none__' && q.fundUse !== '__transit__' && !opts.fundUses.some((u) => String(u.id) === q.fundUse)) {
             next.fundUse = undefined;
             changed = true;
           }
@@ -513,7 +518,11 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             </select>
             <select
               className="input filter-control"
-              title={options.fundUses.find((u) => String(u.id) === query.fundUse)?.name || '全部募投'}
+              title={
+                query.fundUse === '__transit__'
+                  ? TRANSIT_FUND_USE_LABEL
+                  : options.fundUses.find((u) => String(u.id) === query.fundUse)?.name || '全部募投'
+              }
               value={query.fundUse ?? ''}
               onChange={(e) => {
                 const fundUse = e.target.value || undefined;
@@ -522,6 +531,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             >
               <option value="">全部募投</option>
               {options.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
+              {options.hasTransitFundUse ? <option value="__transit__">{TRANSIT_FUND_USE_LABEL}</option> : null}
               {options.fundUses.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
@@ -632,7 +642,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       {!compare && notice ? <div className="flow-notice">{notice}</div> : null}
 
       <div className={compare ? 'tx-compare' : undefined}>
-      <div className={compare ? 'tx-compare-left' : undefined}>
+      <div className={compare ? 'tx-compare-left' : undefined} style={compare ? { width: `${split * 100}%` } : undefined}>
       <div className={compare ? 'tx-compare-left-scroll' : undefined}>
       {compare || !data ? null : (
         <div className="tx-summary">
@@ -888,6 +898,44 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
         />
       ) : null}
       </div>
+      {compare ? (
+        <div
+          className="tx-compare-split"
+          role="separator"
+          aria-orientation="vertical"
+          aria-valuemin={28}
+          aria-valuemax={72}
+          aria-valuenow={Math.round(split * 100)}
+          title="拖动调整左右宽度"
+          onPointerDown={(e) => {
+            splitDrag.current = true;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            e.currentTarget.classList.add('dragging');
+            e.currentTarget.parentElement?.classList.add('is-split-drag');
+          }}
+          onPointerMove={(e) => {
+            if (!splitDrag.current) return;
+            const parent = e.currentTarget.parentElement;
+            if (!parent) return;
+            const rect = parent.getBoundingClientRect();
+            if (rect.width <= 0) return;
+            const minLeft = 320;
+            const minRight = 280;
+            const x = Math.min(Math.max(e.clientX - rect.left, minLeft), rect.width - minRight);
+            setSplit(x / rect.width);
+          }}
+          onPointerUp={(e) => {
+            splitDrag.current = false;
+            e.currentTarget.classList.remove('dragging');
+            e.currentTarget.parentElement?.classList.remove('is-split-drag');
+          }}
+          onPointerCancel={(e) => {
+            splitDrag.current = false;
+            e.currentTarget.classList.remove('dragging');
+            e.currentTarget.parentElement?.classList.remove('is-split-drag');
+          }}
+        />
+      ) : null}
       {compare ? (
         <div className="tx-compare-right">
           {pdfSrc ? <iframe key={pdfSrc} className="tx-pdf-frame" title="流水 PDF" src={pdfSrc} /> : null}
