@@ -10,7 +10,13 @@ import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import { Router } from 'express';
 import { db } from './db.js';
-import { fileResumeHint, parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
+import {
+  fileResumeHint,
+  normalizeBankDate,
+  parseQueue,
+  recomputeFileBalanceReviews,
+  refreshTaskFilesAuto,
+} from './parse.js';
 import { bulkCategory, setTxCategory } from './categorize.js';
 import { TaskListItem, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
@@ -100,6 +106,57 @@ transactionsRouter.post('/bulk-category', (req, res) => {
   if (!Array.isArray(b.ids)) return res.status(400).json({ error: 'ids 需为数组' });
   const category = b.category == null || b.category === '' ? null : String(b.category).trim();
   res.json({ updated: bulkCategory(b.ids as number[], category) });
+});
+
+/** 人工指定日期后去掉日期相关提示；余额断裂、分类未确认等其它原因保留 */
+function stripDateNotes(note: string | null): string | null {
+  if (!note) return null;
+  const parts = note
+    .split('；')
+    .map((part) => part.trim())
+    .filter((part) => part && part !== '日期缺失' && !part.startsWith('日期格式异常'));
+  return parts.length > 0 ? parts.join('；') : null;
+}
+
+/** 批量改日期。日期统一收成 YYYY-MM-DD，并清掉「日期缺失/日期格式异常」提示。 */
+export function bulkSetDate(ids: number[], date: string): number {
+  const clean = [...new Set(ids.map((n) => Number(n)).filter((n) => Number.isFinite(n)))];
+  if (clean.length === 0) return 0;
+  const upd = db.prepare('UPDATE transactions SET date = ?, review_note = ?, status = ? WHERE id = ?');
+  const get = db.prepare('SELECT file_id, review_note, status FROM transactions WHERE id = ?');
+  return db.transaction(() => {
+    const touched = new Set<number>();
+    let n = 0;
+    for (const id of clean) {
+      const cur = get.get(id) as
+        | { file_id: number; review_note: string | null; status: string }
+        | undefined;
+      if (!cur) continue;
+      const note = stripDateNotes(cur.review_note);
+      const status = note == null && cur.status === 'needs_review' ? 'ok' : cur.status;
+      upd.run(date, note, status, id);
+      touched.add(cur.file_id);
+      n++;
+    }
+    // 文件下已没有待复核行时回到 done（与启动自愈的日期整理保持一致）
+    const fileUp = db.prepare(
+      `UPDATE files SET status = 'done', updated_at = ?
+       WHERE id = ? AND status = 'needs_review'
+         AND NOT EXISTS (SELECT 1 FROM transactions WHERE file_id = files.id AND status = 'needs_review')`,
+    );
+    const now = new Date().toISOString();
+    for (const fileId of touched) fileUp.run(now, fileId);
+    return n;
+  })();
+}
+
+/** 批量改日期：只动 date 与日期相关复核提示，不改金额/方向/余额 */
+transactionsRouter.post('/bulk-date', (req, res) => {
+  const b = (req.body ?? {}) as { ids?: unknown; date?: unknown };
+  if (!Array.isArray(b.ids)) return res.status(400).json({ error: 'ids 需为数组' });
+  const iso = normalizeBankDate(typeof b.date === 'string' ? b.date : undefined);
+  if (!iso) return res.status(400).json({ error: '日期需为 2026-01-09、20260109、2026/1/9 这类可识别的日期' });
+  res.json({ updated: bulkSetDate(b.ids as number[], iso), date: iso });
 });
 
 /** 人工修正一行（解析字段 + M4 的改判）。保存后按印刷顺序重算该文件全部前后余额，含原先标为正常的行 */

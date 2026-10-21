@@ -223,6 +223,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ids, category }),
     }),
+  /** 对照页批量改日期：服务端统一收成 YYYY-MM-DD，并清掉日期相关复核提示 */
+  bulkDate: (ids: number[], date: string) =>
+    j<{ updated: number; date: string }>(`/api/transactions/bulk-date`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, date }),
+    }),
   /* ---------- 分类集（M4，§3.3 设置页管理） ---------- */
   getCategories: () => j<{ categories: string[]; defs: Record<string, string> }>('/api/categories'),
   putCategories: (categories: string[]) =>

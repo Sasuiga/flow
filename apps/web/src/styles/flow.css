@@ -1702,6 +1702,11 @@ select.input {
   min-width: 140px;
 }
 
+.tx-bulk-date {
+  width: auto;
+  min-width: 150px;
+}
+
 .tx-bulk .primary-button,
 .tx-bulk .secondary-button {
   min-height: 30px;
@@ -3265,5 +3270,19 @@ button.tx-status:hover {
   .list-stack .list-row-main {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* 对照页批量条：手机上按钮和日期输入框按触控尺寸放大 */
+@media (max-width: 640px) {
+  .tx-bulk .input,
+  .tx-bulk .primary-button,
+  .tx-bulk .secondary-button {
+    min-height: 44px;
+    font-size: 15px;
+  }
+
+  .tx-bulk-date {
+    flex: 1 1 140px;
   }
 }

@@ -99,6 +99,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [editBusy, setEditBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkCat, setBulkCat] = useState('');
+  const [bulkDate, setBulkDate] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [compareFile, setCompareFile] = useState<BankFile | null>(null);
   const [comparePick, setComparePick] = useState(false);
@@ -275,6 +276,24 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       setNotice(`已把 ${res.updated} 笔改判为${category ?? '未分类'}`);
       setSelectedIds([]);
       setBulkCat('');
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /** 对照里多选改日期。保留勾选，方便接着改分类 */
+  async function applyBulkDate() {
+    if (selectedIds.length === 0 || !bulkDate || bulkBusy) return;
+    setBulkBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const res = await api.bulkDate(selectedIds, bulkDate);
+      setNotice(`已把 ${res.updated} 笔日期改为 ${res.date}`);
+      setBulkDate('');
       setReloadKey((k) => k + 1);
     } catch (e) {
       setError((e as Error).message);
@@ -933,7 +952,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       {compare && selectedIds.length > 0 ? (
         <div className="tx-bulk tx-compare-bulk">
           <span className="tx-bulk-count">已选 {selectedIds.length} 笔</span>
-          <span className="tx-bulk-hint">可跨页勾选。改判后记为人工，自动分类不会覆盖。</span>
+          <span className="tx-bulk-hint">可跨页勾选。改判记为人工；改日期会清掉日期相关复核提示。</span>
           <select
             className="input filter-control tx-bulk-select"
             aria-label="批量分类"
@@ -950,6 +969,22 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           <button type="button" className="primary-button" disabled={!bulkCat || bulkBusy} onClick={() => void applyBulk()}>
             {bulkBusy ? '改判中…' : '改判'}
           </button>
+          <input
+            type="date"
+            className="input filter-control tx-bulk-date"
+            aria-label="批量修改日期"
+            value={bulkDate}
+            disabled={bulkBusy}
+            onChange={(e) => setBulkDate(e.target.value)}
+          />
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!bulkDate || bulkBusy}
+            onClick={() => void applyBulkDate()}
+          >
+            {bulkBusy ? '处理中…' : '改日期'}
+          </button>
           <button
             type="button"
             className="secondary-button"
@@ -957,6 +992,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             onClick={() => {
               setSelectedIds([]);
               setBulkCat('');
+              setBulkDate('');
             }}
           >
             取消
