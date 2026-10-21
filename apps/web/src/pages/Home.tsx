@@ -97,7 +97,7 @@ export function HomePage({ onOpenClient }: HomeProps) {
           </div>
         </div>
       ) : (
-        <>
+        <div className="list-stack">
           <ListRowHeader
             withMenu
             cols={[
@@ -131,7 +131,7 @@ export function HomePage({ onOpenClient }: HomeProps) {
               </span>
             </ListRow>
           ))}
-        </>
+        </div>
       )}
       </section>
 

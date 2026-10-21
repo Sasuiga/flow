@@ -43,7 +43,7 @@ function ConfirmView({
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onResult(false)}>
-      <div className="modal-dialog" style={{ width: 'min(400px, calc(100vw - 36px))' }} role="dialog" aria-modal="true">
+      <div className="modal-dialog modal-dialog-confirm" role="dialog" aria-modal="true">
         <h3>{opts?.title ?? '确认操作'}</h3>
         <p className="modal-lead">{message}</p>
         <div className="modal-actions">

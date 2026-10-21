@@ -18,6 +18,9 @@ type ListRowProps = {
 };
 
 const MENU_WIDTH = 112;
+const MENU_WIDTH_MOBILE = 132;
+const MENU_ITEM_HEIGHT = 34;
+const MENU_ITEM_HEIGHT_MOBILE = 42;
 const MARGIN = 8;
 
 /**
@@ -54,14 +57,18 @@ export function ListRow({ active, disabled, menuItems, onClick, title, children 
   function openMenu() {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const estHeight = (menuItems?.length ?? 1) * 34 + 10;
+    // 手机端的菜单更高、更宽（触控目标），定位要按同一套尺寸估算
+    const narrow = window.matchMedia('(max-width: 640px)').matches;
+    const menuWidth = narrow ? MENU_WIDTH_MOBILE : MENU_WIDTH;
+    const itemHeight = narrow ? MENU_ITEM_HEIGHT_MOBILE : MENU_ITEM_HEIGHT;
+    const estHeight = (menuItems?.length ?? 1) * itemHeight + 10;
     const hasRoomBelow = rect.bottom + 4 + estHeight <= window.innerHeight - MARGIN;
     const top = hasRoomBelow
       ? rect.bottom + 4
       : Math.max(MARGIN, rect.top - estHeight - 4);
     const left = Math.min(
-      Math.max(MARGIN, rect.right - MENU_WIDTH),
-      window.innerWidth - MENU_WIDTH - MARGIN,
+      Math.max(MARGIN, rect.right - menuWidth),
+      window.innerWidth - menuWidth - MARGIN,
     );
     setMenuPos({ left, top });
     setMenuOpen(true);
