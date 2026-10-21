@@ -293,7 +293,7 @@ export interface TxQuery {
   /** 开户主体，与列表展示的名称一致 */
   holder?: string;
   accountNo?: string;
-  /** 募投项目。数字 id，'__none__' 表示未归集，'__transit__' 表示多项目中转 */
+  /** 募投项目。数字 id，'__none__' 表示未归集，'__transit__' / '__tempflow__' 是通用选项 */
   fundUse?: string;
   from?: string;
   to?: string;
@@ -319,10 +319,10 @@ export interface TxOptions {
   tasks: { id: number; name: string; clientName: string; projectName: string; txCount: number }[];
   /** 当前其余条件下出现过的募投项目 */
   fundUses: { id: number; name: string }[];
-  /** 有账号尚未归集到募投项目，且不是多项目中转 */
+  /** 有账号尚未归集到募投项目，且不是通用选项 */
   hasUnassignedFundUse: boolean;
-  /** 有专户标成多项目中转 */
-  hasTransitFundUse: boolean;
+  /** 当前条件下出现过的通用募投选项，如多项目中转、临时补流 */
+  specialFundUses: { query: string; label: string }[];
   banks: string[];
   /** 当前任务里出现过的开户主体 */
   holders: string[];
@@ -427,10 +427,37 @@ export interface CashLotReport {
   priorOpen: number;
 }
 
-/** 募资专户未挂具体募投项目、但标明服务于多个项目时的角色。 */
-export const TRANSIT_USE_ROLE = 'transit';
-/** 展示名。库里只存 TRANSIT_USE_ROLE。 */
+/**
+ * 不挂具体募投项目、但有固定含义的专户选项。
+ * 库里只存 role，界面和流水上显示 label。query 是交易筛选的取值。
+ */
+export const SPECIAL_FUND_USES = [
+  { role: 'transit', label: '多项目中转', query: '__transit__' },
+  { role: 'tempflow', label: '临时补流', query: '__tempflow__' },
+] as const;
+
+export type SpecialFundUseRole = (typeof SPECIAL_FUND_USES)[number]['role'];
+
+export const TRANSIT_USE_ROLE: SpecialFundUseRole = 'transit';
 export const TRANSIT_FUND_USE_LABEL = '多项目中转';
+
+export function specialFundUseByRole(role: string | null | undefined) {
+  return SPECIAL_FUND_USES.find((item) => item.role === role);
+}
+
+export function specialFundUseByQuery(query: string | null | undefined) {
+  return SPECIAL_FUND_USES.find((item) => item.query === query);
+}
+
+/** 专户角色换成展示名，否则用募投项目名。 */
+export function fundUseNameCaseSql(roleExpr = 'fua.use_role', nameExpr = 'fu.name'): string {
+  const whens = SPECIAL_FUND_USES.map((item) => `WHEN ${roleExpr} = '${item.role}' THEN '${item.label}'`).join(' ');
+  return `CASE ${whens} ELSE ${nameExpr} END`;
+}
+
+export function specialFundUseRoleInSql(roleExpr = 'fua.use_role'): string {
+  return `${roleExpr} IN (${SPECIAL_FUND_USES.map((item) => `'${item.role}'`).join(', ')})`;
+}
 
 /** 融资项目上手工登记的募资专户。募投项目是挂上去的，不存在流水里。 */
 export interface ProjectAccount {
@@ -440,8 +467,8 @@ export interface ProjectAccount {
   accountNo: string;
   fundUseId?: number;
   fundUse?: string;
-  /** transit：多项目中转。和「不挂」都没有 fundUseId。 */
-  useRole?: typeof TRANSIT_USE_ROLE;
+  /** 通用选项。和「不挂」都没有 fundUseId。 */
+  useRole?: SpecialFundUseRole;
   /** 开户日期 YYYY-MM-DD，未填为空 */
   openedOn?: string;
 }

@@ -1,7 +1,7 @@
 import { Bookmark, Columns2, FilterX, Inbox } from 'lucide-react';
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Table } from 'antd';
-import { BankFile, TRANSIT_FUND_USE_LABEL, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
+import { BankFile, specialFundUseByQuery, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { Modal } from '../components/Modal';
 import { pickLlmDialog, pickPagesDialog } from '../lib/confirm';
@@ -137,6 +137,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [pdfFit, setPdfFit] = useState(0);
   const [pageGaps, setPageGaps] = useState<number[]>([]);
   const [pageBusy, setPageBusy] = useState(false);
+  const [reviewLeft, setReviewLeft] = useState<number | null>(null);
   const jumpToId = useRef<number | null>(null);
   const localUrlRef = useRef<string | null>(null);
   const queryBeforeRef = useRef<TxQuery | null>(null);
@@ -191,10 +192,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           if (q.fundUse === '__none__' && !opts.hasUnassignedFundUse) {
             next.fundUse = undefined;
             changed = true;
-          } else if (q.fundUse === '__transit__' && !opts.hasTransitFundUse) {
+          } else if (specialFundUseByQuery(q.fundUse) && !opts.specialFundUses.some((item) => item.query === q.fundUse)) {
             next.fundUse = undefined;
             changed = true;
-          } else if (q.fundUse && q.fundUse !== '__none__' && q.fundUse !== '__transit__' && !opts.fundUses.some((u) => String(u.id) === q.fundUse)) {
+          } else if (q.fundUse && q.fundUse !== '__none__' && !specialFundUseByQuery(q.fundUse) && !opts.fundUses.some((u) => String(u.id) === q.fundUse)) {
             next.fundUse = undefined;
             changed = true;
           }
@@ -590,6 +591,32 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   }, [compare, data, loading, query.page, jumpSeq]);
 
   useEffect(() => {
+    if (!compareFile || query.taskId == null) {
+      setReviewLeft(null);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .listTransactions({
+        taskId: query.taskId,
+        fileId: compareFile.id,
+        status: 'needs_review',
+        sort: 'stmt',
+        page: 1,
+        pageSize: 1,
+      })
+      .then((r) => {
+        if (!cancelled) setReviewLeft(r.total);
+      })
+      .catch(() => {
+        if (!cancelled) setReviewLeft(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [compareFile, query.taskId, reloadKey]);
+
+  useEffect(() => {
     if (!compareFile || localUrl) {
       setPageGaps([]);
       return;
@@ -607,6 +634,34 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       cancelled = true;
     };
   }, [compareFile, localUrl]);
+
+  /** 重读结束后把这一页的第一笔滚到中间，方便直接看到换上或留下的记录。 */
+  async function focusPdfPage(fileId: number, pdfPage: number) {
+    if (query.taskId == null) return;
+    const pageSize = query.pageSize ?? 50;
+    const chunk = 200;
+    for (let page = 1; page <= 50; page++) {
+      const r = await api.listTransactions({
+        taskId: query.taskId,
+        fileId,
+        sort: 'stmt',
+        page,
+        pageSize: chunk,
+      });
+      const idx = r.rows.findIndex((row) => row.page === pdfPage);
+      if (idx >= 0) {
+        const row = r.rows[idx];
+        const listPage = Math.floor(((page - 1) * chunk + idx) / pageSize) + 1;
+        jumpToId.current = row.id;
+        setJumpSeq((n) => n + 1);
+        setPdfFit((n) => n + 1);
+        setFocus({ id: row.id, fileId: row.fileId, fileName: row.fileName, page: row.page || 1 });
+        setQuery((q) => (q.page === listPage ? q : { ...q, page: listPage }));
+        return;
+      }
+      if (page * chunk >= r.total || r.rows.length === 0) break;
+    }
+  }
 
   async function doReparsePages() {
     if (!compareFile || taskId == null || localUrl) return;
@@ -644,6 +699,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           setReloadKey((k) => k + 1);
           const again = await api.filePages(fileId).catch(() => null);
           if (again) setPageGaps(again.gaps);
+          if (pages[0]) await focusPdfPage(fileId, pages[0]).catch(() => undefined);
           setNotice(file?.error ? file.error : `第 ${list} 页已补进原记录`);
           return;
         }
@@ -746,9 +802,9 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             <select
               className="input filter-control"
               title={
-                query.fundUse === '__transit__'
-                  ? TRANSIT_FUND_USE_LABEL
-                  : options.fundUses.find((u) => String(u.id) === query.fundUse)?.name || '全部募投'
+                specialFundUseByQuery(query.fundUse)?.label ||
+                options.fundUses.find((u) => String(u.id) === query.fundUse)?.name ||
+                '全部募投'
               }
               value={query.fundUse ?? ''}
               onChange={(e) => {
@@ -758,7 +814,11 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             >
               <option value="">全部募投</option>
               {options.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
-              {options.hasTransitFundUse ? <option value="__transit__">{TRANSIT_FUND_USE_LABEL}</option> : null}
+              {options.specialFundUses.map((item) => (
+                <option key={item.query} value={item.query}>
+                  {item.label}
+                </option>
+              ))}
               {options.fundUses.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.name}
@@ -870,6 +930,26 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
 
       <div className={compare ? 'tx-compare' : undefined}>
       <div className={compare ? 'tx-compare-left' : undefined} style={compare ? { width: `${split * 100}%` } : undefined}>
+      {compare ? (
+        <div className="tx-compare-next-bar">
+          <button
+            type="button"
+            className={`tx-next-review${reviewLeft === 0 ? ' empty' : ''}`}
+            disabled={jumpBusy || reviewLeft === 0}
+            title={
+              reviewLeft == null
+                ? '正在统计待复核'
+                : reviewLeft === 0
+                  ? '这份流水没有待复核'
+                  : `还剩 ${reviewLeft} 笔待复核`
+            }
+            onClick={() => void jumpToNearestReview()}
+          >
+            <span>下一个待复核</span>
+            <span className="tx-next-review-count">{reviewLeft == null ? '–' : reviewLeft}</span>
+          </button>
+        </div>
+      ) : null}
       <div className={compare ? 'tx-compare-left-scroll' : undefined}>
       {compare || !data ? null : (
         <div className="tx-summary">
@@ -1057,26 +1137,9 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
-              title: compare ? (
-                <span className="tx-status-head">
-                  <button
-                    type="button"
-                    className="secondary-button tx-next-review"
-                    disabled={jumpBusy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void jumpToNearestReview();
-                    }}
-                  >
-                    下一个待复核
-                  </button>
-                  <span>状态</span>
-                </span>
-              ) : (
-                '状态'
-              ),
+              title: '状态',
               key: 'status',
-              width: compare ? 148 : 112,
+              width: 112,
               render: (_: unknown, r: TxRow) => {
                 const chip = STATUS_CHIP[r.status] ?? { cls: 'chip-muted', label: r.status };
                 return (

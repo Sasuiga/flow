@@ -7,7 +7,7 @@
  * 实施中置换：转出是用募集资金置换实施期间已投入的资金，同分类转入从已置换金额里扣掉。
  */
 import { db } from './db.js';
-import { CategoryFocus, CategoryFocusLine, CategoryFocusParty, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
+import { CategoryFocus, CategoryFocusLine, CategoryFocusParty, fundUseNameCaseSql } from '@flow/shared';
 
 const FOCUS = ['临时补流', '现金管理', '实施中置换'] as const;
 
@@ -116,7 +116,7 @@ export function categoryFocus(taskId: number): { views: CategoryFocus[] } {
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account, t.category,
               f.bank, f.account_no,
-              CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END AS fund_use,
+              ${fundUseNameCaseSql()} AS fund_use,
               (SELECT fua2.holder
                  FROM fund_use_accounts fua2
                 WHERE fua2.project_id = tk.project_id

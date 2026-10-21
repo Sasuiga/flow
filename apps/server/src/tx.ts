@@ -20,7 +20,17 @@ import {
 } from './parse.js';
 import { llmProfileById } from './settings.js';
 import { bulkCategory, setTxCategory } from './categorize.js';
-import { TaskListItem, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
+import {
+  fundUseNameCaseSql,
+  SPECIAL_FUND_USES,
+  specialFundUseByQuery,
+  specialFundUseRoleInSql,
+  TaskListItem,
+  TxOptions,
+  TxPageResult,
+  TxQuery,
+  TxRow,
+} from '@flow/shared';
 
 export function toTxRow(r: Record<string, unknown>): TxRow {
   return {
@@ -71,8 +81,8 @@ LEFT JOIN tx_watch w ON w.transaction_id = t.id`;
 
 /** 与交易列表「开户主体」列相同：登记的账户主体优先，否则用流水上的户名 */
 const HOLDER_SQL = `COALESCE(NULLIF(TRIM(fua.holder), ''), NULLIF(TRIM(f.account_name), ''))`;
-const FUND_USE_NAME_SQL = `CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END`;
-const UNASSIGNED_FUND_USE_SQL = `fu.id IS NULL AND IFNULL(fua.use_role, '') != '${TRANSIT_USE_ROLE}'`;
+const FUND_USE_NAME_SQL = fundUseNameCaseSql();
+const UNASSIGNED_FUND_USE_SQL = `fu.id IS NULL AND NOT (${specialFundUseRoleInSql("IFNULL(fua.use_role, '')")})`;
 
 export const BASE_SELECT = `
 SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
@@ -336,13 +346,14 @@ transactionsRouter.get('/options', (req, res) => {
       `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, `${UNASSIGNED_FUND_USE_SQL} AND f.account_no IS NOT NULL AND TRIM(f.account_no) != ''`)} LIMIT 1`,
     )
     .get(...useWhere.args);
-  const transit = db
-    .prepare(
-      `SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, `fua.use_role = '${TRANSIT_USE_ROLE}'`)} LIMIT 1`,
-    )
-    .get(...useWhere.args);
+  const specialFundUses = SPECIAL_FUND_USES.flatMap((item) => {
+    const hit = db
+      .prepare(`SELECT 1 AS x ${from}${andWhere(useWhere.whereSql, `fua.use_role = '${item.role}'`)} LIMIT 1`)
+      .get(...useWhere.args);
+    return hit ? [{ query: item.query, label: item.label }] : [];
+  });
 
-  const options: TxOptions = { tasks, banks, holders, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned, hasTransitFundUse: !!transit };
+  const options: TxOptions = { tasks, banks, holders, accounts, categories, fundUses, hasUnassignedFundUse: !!unassigned, specialFundUses };
   res.json(options);
 });
 
@@ -375,8 +386,9 @@ function buildWhere(
     where.push('f.account_no LIKE ?');
     args.push(`%${q.accountNo}%`);
   }
+  const specialFundUse = !skip.has('fundUse') ? specialFundUseByQuery(q.fundUse) : undefined;
   if (!skip.has('fundUse') && q.fundUse === '__none__') where.push(UNASSIGNED_FUND_USE_SQL);
-  else if (!skip.has('fundUse') && q.fundUse === '__transit__') where.push(`fua.use_role = '${TRANSIT_USE_ROLE}'`);
+  else if (specialFundUse) where.push(`fua.use_role = '${specialFundUse.role}'`);
   else if (has('fundUse')) {
     where.push('fu.id = ?');
     args.push(Number(q.fundUse));

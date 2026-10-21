@@ -9,7 +9,7 @@ import { cashLots, saveCashSplit } from './cashLots.js';
 import { getCashMandate, saveCashMandate } from './cashMandate.js';
 import { getFlow, runFlow } from './flow.js';
 import { syncTaskWatchers } from './watch.js';
-import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, TaskView, TRANSIT_USE_ROLE } from '@flow/shared';
+import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, specialFundUseByRole, TaskView } from '@flow/shared';
 
 const now = () => new Date().toISOString();
 
@@ -141,7 +141,7 @@ function toProjectAccount(r: Record<string, unknown>): ProjectAccount {
     accountNo: String(r.account_no),
     fundUseId: r.fund_use_id == null ? undefined : Number(r.fund_use_id),
     fundUse: (r.fund_use_name as string | null) || undefined,
-    useRole: r.use_role === TRANSIT_USE_ROLE ? TRANSIT_USE_ROLE : undefined,
+    useRole: specialFundUseByRole(String(r.use_role ?? ''))?.role,
     openedOn: String(r.opened_on ?? '') || undefined,
   };
 }
@@ -164,7 +164,8 @@ function readAssignment(
   projectId: number,
   body: { fundUseId?: unknown; useRole?: unknown },
 ): { fundUseId: number | null; useRole: string } | { error: string } {
-  if (body.useRole === TRANSIT_USE_ROLE) return { fundUseId: null, useRole: TRANSIT_USE_ROLE };
+  const special = specialFundUseByRole(typeof body.useRole === 'string' ? body.useRole : '');
+  if (special) return { fundUseId: null, useRole: special.role };
   const fundUseId = resolveFundUseId(projectId, body.fundUseId);
   if (typeof fundUseId === 'object' && fundUseId) return fundUseId;
   return { fundUseId, useRole: '' };

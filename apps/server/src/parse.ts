@@ -468,6 +468,59 @@ export function recomputeFileBalanceReviews(fileId: number, editedId?: number): 
   return { reviewCount, selfGap, nextGap, hasNext };
 }
 
+const OUT_MONEY_KEYS = ['debit', 'debit_amount', 'out_amount', 'expense', 'withdraw', '借方发生额', '借方金额', '支出金额', '支出'];
+const IN_MONEY_KEYS = ['credit', 'credit_amount', 'in_amount', 'income', 'deposit', '贷方发生额', '贷方金额', '收入金额', '收入'];
+
+function firstPositive(t: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const n = numOrNull(t[k]);
+    if (n != null && Number.isFinite(n) && Math.abs(n) > 0) return Math.abs(n);
+  }
+  return undefined;
+}
+
+/** amount 没有时，从借贷方发生额里取。两边都有数则不猜。 */
+function pickMoney(t: Record<string, unknown>): { amount: number; direction?: 'in' | 'out' } | undefined {
+  const rawAmount = t.amount;
+  if (rawAmount && typeof rawAmount === 'object') {
+    const nested = pickMoney(rawAmount as Record<string, unknown>);
+    if (nested) return nested;
+  }
+  const direct = numOrNull(rawAmount);
+  if (direct != null && Number.isFinite(direct) && Math.abs(direct) > 0) {
+    return { amount: Math.abs(direct), direction: direct < 0 ? 'out' : undefined };
+  }
+  const outAmt = firstPositive(t, OUT_MONEY_KEYS);
+  const inAmt = firstPositive(t, IN_MONEY_KEYS);
+  if (outAmt != null && inAmt == null) return { amount: outAmt, direction: 'out' };
+  if (inAmt != null && outAmt == null) return { amount: inAmt, direction: 'in' };
+  return undefined;
+}
+
+/** 模型有时不叫 transactions，或把数组再包一层、写成字符串。 */
+function modelTransactions(j: unknown): unknown[] {
+  if (Array.isArray(j)) return j;
+  if (!j || typeof j !== 'object') return [];
+  const obj = j as Record<string, unknown>;
+  for (const k of ['transactions', 'txs', 'items', 'records', 'rows', 'data', 'result']) {
+    const v = obj[k];
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string' && v.trim().startsWith('[')) {
+      try {
+        const parsed = JSON.parse(v) as unknown;
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        /* 字符串不是 JSON 数组 */
+      }
+    }
+    if (v && typeof v === 'object') {
+      const inner = modelTransactions(v);
+      if (inner.length > 0) return inner;
+    }
+  }
+  return [];
+}
+
 function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
   if (!Array.isArray(raw)) return [];
   const out: NormTx[] = [];
@@ -476,14 +529,14 @@ function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
     const t = r as Record<string, unknown>;
     const page = Math.max(1, Math.min(totalPages, Math.round(numOrNull(t.page) ?? 1)));
     const lineNo = Math.max(0, Math.round(numOrNull(t.line_no) ?? 0));
-    const amount = Math.abs(numOrNull(t.amount) ?? NaN);
-    if (!Number.isFinite(amount) || amount <= 0) continue; // 无金额的不成行（表头/合计行）
+    const money = pickMoney(t);
+    if (!money) continue; // 无金额的不成行（表头/合计行）
     const dirRaw = String(t.direction ?? '').toLowerCase();
     // 先判 out（'outflow' 含 'out' 不含 'in'；'withdraw' 等），再判 in
     const isOut = /out|withdraw|debit|支出|付|借/.test(dirRaw);
     const isIn = /\bin\b|^in|inflow|income|deposit|credit|收入|贷/.test(dirRaw);
     const dirOk = isOut || isIn;
-    const direction: 'in' | 'out' = isOut ? 'out' : 'in';
+    const direction: 'in' | 'out' = isOut ? 'out' : isIn ? 'in' : (money.direction ?? 'in');
     const review: string[] = [];
     const dateRaw = cleanStr(t.date);
     const date = dateRaw ? normalizeBankDate(dateRaw) : undefined;
@@ -495,13 +548,13 @@ function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
     const bal = numOrNull(t.balance);
     const summary = cleanStr(t.summary);
     if (!summary) review.push('摘要缺失');
-    if (!dirOk) review.push('收付方向未识别');
+    if (!dirOk && !money.direction) review.push('收付方向未识别');
     out.push({
       page,
       lineNo,
       date,
       summary,
-      amount: Math.round(amount * 100) / 100,
+      amount: Math.round(money.amount * 100) / 100,
       direction,
       balance: bal,
       counterparty: cleanStr(t.counterparty),
@@ -522,6 +575,8 @@ export interface StructuredBatch {
   periodStart?: string;
   periodEnd?: string;
   txs: NormTx[];
+  /** 模型给出的行数，含后来因没有金额被丢掉的 */
+  rawCount?: number;
 }
 
 /** LLM 结构化一批（≤3 页）；prevTail = 上批最后 3 行（跨页衔接，§5.2） */
@@ -544,7 +599,8 @@ export async function structureBatch(
     signal,
   });
   const j = extractJson<Record<string, unknown>>(content);
-  const txs = normalizeTxs(j.transactions, totalPages);
+  const rows = modelTransactions(j);
+  const txs = normalizeTxs(rows, totalPages);
   return {
     bank: cleanStr(j.bank),
     accountNo: cleanStr(j.account_no),
@@ -552,6 +608,7 @@ export async function structureBatch(
     periodStart: cleanDate(j.period_start),
     periodEnd: cleanDate(j.period_end),
     txs,
+    rawCount: rows.length,
   };
 }
 
@@ -577,7 +634,7 @@ export async function structurePageImage(
     { maxTokens: 12000, images: [image.jpeg], signal },
   );
   const j = extractJson<Record<string, unknown>>(content);
-  const rows = Array.isArray(j.transactions) ? j.transactions : [];
+  const rows = modelTransactions(j);
   rows.forEach((row, i) => {
     if (row && typeof row === 'object') {
       const t = row as Record<string, unknown>;
@@ -585,13 +642,17 @@ export async function structurePageImage(
       t.line_no = i + 1;
     }
   });
+  // 归一化会把页码夹到 1..总页数。这一页就是 image.page，写回去，避免新行落到别的页、本页被删空。
+  const txs = normalizeTxs(rows, totalPages).map((t) => ({ ...t, page: image.page }));
+  console.log(`[parse] 第 ${image.page}/${totalPages} 页模型 ${rows.length} 行，可用 ${txs.length} 笔`);
   return {
     bank: cleanStr(j.bank),
     accountNo: cleanStr(j.account_no),
     accountName: cleanStr(j.account_name),
     periodStart: cleanDate(j.period_start),
     periodEnd: cleanDate(j.period_end),
-    txs: normalizeTxs(rows, totalPages),
+    txs,
+    rawCount: rows.length,
   };
 }
 
@@ -722,21 +783,34 @@ function tailBeforePage(fileId: number, page: number): string | undefined {
   return rows.map((t) => t.raw_text || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n');
 }
 
-/** 只删掉这些页的交易再写入新结果。其它页不动。关注、规则命中随这些行一起去掉。 */
-function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { insertedIds: number[] } {
-  const placeholders = pages.map(() => '?').join(',');
+/**
+ * 只换掉这次确实读出交易的页。某一页归一化后是 0 笔，就留下原来的行。
+ * 其它页不动。关注、规则命中随被换掉的行一起去掉。
+ */
+function replaceFilePages(
+  fileId: number,
+  pages: number[],
+  txs: NormTx[],
+): { insertedIds: number[]; replacedPages: number[]; keptPages: number[] } {
+  const byPage = new Map<number, NormTx[]>();
+  for (const p of pages) byPage.set(p, []);
+  for (const t of txs) byPage.get(t.page)?.push(t);
+  const replacedPages = pages.filter((p) => (byPage.get(p)?.length ?? 0) > 0);
+  const keptPages = pages.filter((p) => (byPage.get(p)?.length ?? 0) === 0);
+  if (replacedPages.length === 0) return { insertedIds: [], replacedPages, keptPages };
+  const placeholders = replacedPages.map(() => '?').join(',');
   const tx = db.transaction(() => {
     db.prepare(
       `DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ? AND page IN (${placeholders}))`,
-    ).run(fileId, ...pages);
-    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...pages);
+    ).run(fileId, ...replacedPages);
+    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...replacedPages);
     const ins = db.prepare(
       `INSERT INTO transactions(file_id, page, line_no, date, summary, amount, direction, balance,
         counterparty, counterparty_account, channel, confidence, review_note, raw_text, status)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     const insertedIds: number[] = [];
-    const inOrder = [...txs].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
+    const inOrder = replacedPages.flatMap((p) => byPage.get(p) ?? []).sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
     for (const t of inOrder) {
       const raw = t.raw?.trim();
       const status = t.review ? 'needs_review' : 'ok';
@@ -761,7 +835,7 @@ function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { ins
     }
     return insertedIds;
   });
-  return { insertedIds: tx() };
+  return { insertedIds: tx(), replacedPages, keptPages };
 }
 
 export async function filePageMap(fileId: number): Promise<
@@ -864,6 +938,7 @@ export async function parseFileTextLayer(
     llmExtraHeader: chosen?.extraHeader ?? savedSettings!.llmExtraHeader,
   };
   const all: NormTx[] = [];
+  const pageReads: Array<{ page: number; raw: number; n: number }> = [];
   let meta: Partial<StructuredBatch> = {};
   let prevTail: string | undefined;
   let startAt = 0;
@@ -930,6 +1005,7 @@ export async function parseFileTextLayer(
       if (r.accountName) meta.accountName = r.accountName;
       if (r.periodStart) meta.periodStart = r.periodStart;
       if (r.periodEnd) meta.periodEnd = r.periodEnd;
+      if (pageMode) pageReads.push({ page: image.page, raw: r.rawCount ?? r.txs.length, n: r.txs.length });
       all.push(...r.txs);
       const last2 = r.txs.slice(-2);
       prevTail = last2.length
@@ -954,17 +1030,42 @@ export async function parseFileTextLayer(
   if (pageMode) {
     prog.set('vision', 'done', `已重读第 ${wanted.join('、')} 页`);
     prog.set('structure', 'done', `这几页读出 ${all.length} 笔`);
-    prog.set('balance', 'run', '按整份流水重核前后页的余额');
+    const emptyReads = pageReads.filter((p) => p.n === 0);
     await hold('save', '已暂停，继续后把这几页补进原记录');
-    prog.set('save', 'run', `替换第 ${wanted.join('、')} 页`);
+    const pagesToWrite = wanted.filter((p) => !emptyReads.some((e) => e.page === p));
+    prog.set('save', 'run', pagesToWrite.length > 0 ? `写回第 ${pagesToWrite.join('、')} 页` : '这几页没有新交易，原记录保留');
     const replaced = replaceFilePages(fileId, wanted, all);
-    const balance = recomputeFileBalanceReviews(fileId);
+    console.log(
+      `[parse] file#${fileId} 指定页写回：换上 ${replaced.replacedPages.join('、') || '无'}（${replaced.insertedIds.length} 笔），保留 ${replaced.keptPages.join('、') || '无'}`,
+    );
+    const keptNote = replaced.keptPages
+      .map((p) => {
+        const read = pageReads.find((r) => r.page === p);
+        return read && read.raw > 0
+          ? `第 ${p} 页读到 ${read.raw} 行，但没有能入库的金额，原记录还留着`
+          : `第 ${p} 页没有读出交易，原记录还留着`;
+      })
+      .join('。');
+    const wroteNote =
+      replaced.replacedPages.length > 0
+        ? `第 ${replaced.replacedPages.join('、')} 页已换上 ${replaced.insertedIds.length} 笔`
+        : '';
+    const warn = keptNote ? [keptNote, wroteNote].filter(Boolean).join('。') : null;
+    let reviewCount: number;
+    if (replaced.replacedPages.length > 0) {
+      prog.set('balance', 'run', '按整份流水重核前后页的余额');
+      reviewCount = recomputeFileBalanceReviews(fileId).reviewCount;
+      prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
+    } else {
+      reviewCount = Number(
+        (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE file_id = ? AND status = 'needs_review'`).get(fileId) as { n: number }).n,
+      );
+      prog.set('balance', 'skip', '没有换上新交易，余额沿用原记录');
+    }
     const txCount = Number((db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n);
-    const reviewCount = balance.reviewCount;
-    prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
     const patch: Record<string, unknown> = {
       tx_count: txCount,
-      error: null,
+      error: warn,
       status: reviewCount > 0 ? 'needs_review' : 'done',
       progress: null,
     };
@@ -973,7 +1074,7 @@ export async function parseFileTextLayer(
     if (!file.account_name && meta.accountName) patch.account_name = meta.accountName;
     if (!file.period_start && meta.periodStart) patch.period_start = meta.periodStart;
     if (!file.period_end && meta.periodEnd) patch.period_end = meta.periodEnd;
-    prog.set('save', 'done', `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`);
+    prog.set('save', 'done', warn ?? `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`);
     setFile(fileId, patch);
     if (replaced.insertedIds.length > 0 && getSettings().autoCategorize) {
       try {
@@ -995,15 +1096,16 @@ export async function parseFileTextLayer(
           },
         });
         prog.set('categorize', 'done', r.classified > 0 ? `已分类 ${r.classified} 笔` : '无需分类');
-        setFile(fileId, { error: null });
+        setFile(fileId, { error: warn });
       } catch (e) {
         if (isStopped(e)) {
           prog.set('categorize', 'skip', '已终止');
-          setFile(fileId, { progress: null, error: null });
+          setFile(fileId, { progress: null, error: warn });
           return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
         }
         prog.set('categorize', 'fail', (e as Error).message);
-        setFile(fileId, { error: `这几页已补进原记录，LLM 分类失败：${(e as Error).message}` });
+        const fail = (e as Error).message;
+        setFile(fileId, { error: warn ? `${warn}。分类失败：${fail}` : `这几页已补进原记录，LLM 分类失败：${fail}` });
       }
     } else {
       prog.set('categorize', 'skip', replaced.insertedIds.length > 0 ? '自动分类已关闭' : '这几页没有新交易');

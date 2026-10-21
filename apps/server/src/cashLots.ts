@@ -9,7 +9,7 @@
  * 期末未赎回 = 上期末余额 − 本期赎回的上期本金 + 本期购买尚未赎回。上期尚未赎回只给合计，不拆成单笔。
  * 上期购买、本期赎回、且收益已经能分开的，计入利息合计。活期「利息」不是现金管理收益，不进这张表。
  */
-import { CashLot, CashLotLine, CashLotReport, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
+import { CashLot, CashLotLine, CashLotReport, fundUseNameCaseSql, specialFundUseRoleInSql } from '@flow/shared';
 import { getCashMandate } from './cashMandate.js';
 import { db } from './db.js';
 
@@ -313,13 +313,13 @@ export function cashLots(taskId: number): CashLotReport | null {
     .prepare(
       `SELECT t.id, t.date, t.amount, t.direction, t.summary, t.counterparty, t.counterparty_account, t.category,
               f.bank, f.account_no, f.account_name,
-              (SELECT CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END
+              (SELECT ${fundUseNameCaseSql()}
                  FROM fund_use_accounts fua
                  LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
                 WHERE fua.project_id = ?
                   AND fua.account_key != ''
                   AND fua.account_key = ${accountKeySql}
-                  AND (fu.id IS NOT NULL OR fua.use_role = '${TRANSIT_USE_ROLE}')
+                  AND (fu.id IS NOT NULL OR ${specialFundUseRoleInSql()})
                 ORDER BY fu.id
                 LIMIT 1) AS fund_use,
               (SELECT fua.holder

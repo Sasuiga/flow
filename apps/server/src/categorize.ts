@@ -12,7 +12,7 @@ import { db } from './db.js';
 import { extractJson, isAbortError, llmChat } from './ai.js';
 import { getSettings } from './settings.js';
 import { bankShort } from './flow.js';
-import { CATEGORY_DEFS, ClassifyOutcome, DEDICATED_CATEGORIES, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
+import { CATEGORY_DEFS, ClassifyOutcome, DEDICATED_CATEGORIES, fundUseNameCaseSql, specialFundUseByRole } from '@flow/shared';
 
 /* ---------- 分类集（settings 表存 JSON 数组；缺省用专户默认集） ---------- */
 
@@ -103,6 +103,13 @@ function taskContext(taskId: number): {
       name: string;
     }[]
   ).map((r) => r.name);
+  const roles = db
+    .prepare(`SELECT DISTINCT use_role AS role FROM fund_use_accounts WHERE project_id = ? AND use_role != ''`)
+    .all(head.project_id) as { role: string }[];
+  for (const row of roles) {
+    const label = specialFundUseByRole(row.role)?.label;
+    if (label && !fundUses.includes(label)) fundUses.push(label);
+  }
   const accounts = (
     db
       .prepare("SELECT bank, account_no, holder FROM fund_use_accounts WHERE project_id = ? AND account_no != '' ORDER BY bank, account_no")
@@ -184,7 +191,7 @@ export async function classifyTask(taskId: number, opts: ClassifyOptions = {}): 
     .prepare(
       `SELECT t.id, t.date, t.summary, t.amount, t.direction, t.counterparty, t.counterparty_account,
               t.channel, t.review_note, t.status, fua.fund_use_id, f.account_no,
-              CASE WHEN fua.use_role = '${TRANSIT_USE_ROLE}' THEN '${TRANSIT_FUND_USE_LABEL}' ELSE fu.name END AS fund_use_name
+              ${fundUseNameCaseSql()} AS fund_use_name
        FROM transactions t
        JOIN files f ON f.id = t.file_id
        LEFT JOIN fund_use_accounts fua
