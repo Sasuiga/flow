@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS files (
   tx_count INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   progress TEXT,
+  checkpoint TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(task_id, rel_path)
 );
@@ -191,6 +192,9 @@ if (!tableCols('transactions').includes('review_note')) {
 if (!tableCols('files').includes('progress')) {
   db.exec('ALTER TABLE files ADD COLUMN progress TEXT');
 }
+if (!tableCols('files').includes('checkpoint')) {
+  db.exec('ALTER TABLE files ADD COLUMN checkpoint TEXT');
+}
 
 if (!tableCols('projects').includes('client_id')) {
   db.exec('ALTER TABLE projects ADD COLUMN client_id INTEGER');
@@ -212,6 +216,7 @@ CREATE TABLE files (
   tx_count INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   progress TEXT,
+  checkpoint TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(task_id, rel_path)
 );

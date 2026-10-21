@@ -70,11 +70,15 @@ export interface TaskDetail {
   client: ClientBrief;
   files: BankFile[];
   accounts: ProjectAccount[];
+  /** 这个任务的解析已暂停，点继续后从停下的那一步接着做 */
+  parsePaused?: boolean;
 }
 
 export interface RefreshResult {
   ok: boolean;
   added: number;
+  /** 上次没读完、这次从断点继续的文件数 */
+  resumed?: number;
 }
 
 export const api = {
@@ -149,9 +153,22 @@ export const api = {
   recentTasks: () => j<TaskBrief[]>('/api/tasks/recent'),
 
   /* ---------- 解析 / 交易浏览器（M2） ---------- */
-  parseFile: (id: number) => j<{ ok: boolean; queued: boolean }>(`/api/files/${id}/parse`, { method: 'POST' }),
+  parseFile: (id: number, fresh = false) =>
+    j<{ ok: boolean; queued: boolean; paused?: boolean; resumed?: boolean; resumePage?: number }>(
+      `/api/files/${id}/parse`,
+      { method: 'POST', body: JSON.stringify({ fresh }) },
+    ),
   parseTask: (taskId: number) =>
-    j<{ ok: boolean; added: number; queued: number }>(`/api/files/task/${taskId}/parse`, { method: 'POST' }),
+    j<{ ok: boolean; added: number; queued: number; paused?: boolean; resumed?: number }>(
+      `/api/files/task/${taskId}/parse`,
+      { method: 'POST' },
+    ),
+  pauseTaskParse: (taskId: number) =>
+    j<{ ok: boolean; files: number; paused: boolean }>(`/api/files/task/${taskId}/pause`, { method: 'POST' }),
+  resumeTaskParse: (taskId: number) =>
+    j<{ ok: boolean; files: number; paused: boolean }>(`/api/files/task/${taskId}/resume`, { method: 'POST' }),
+  stopTaskParse: (taskId: number) =>
+    j<{ ok: boolean; files: number; paused: boolean }>(`/api/files/task/${taskId}/stop`, { method: 'POST' }),
   deleteFile: (id: number) => j<{ ok: boolean }>(`/api/files/${id}`, { method: 'DELETE' }),
   /** 把这份流水归到某个已登记募资专户。只改文件上的银行、账号、户名 */
   assignFileAccount: (id: number, body: { bank: string; accountNo: string; accountName: string }) =>

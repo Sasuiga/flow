@@ -9,7 +9,7 @@
  */
 import { Router } from 'express';
 import { db } from './db.js';
-import { extractJson, llmChat } from './ai.js';
+import { extractJson, isAbortError, llmChat } from './ai.js';
 import { getSettings } from './settings.js';
 import { bankShort } from './flow.js';
 import { CATEGORY_DEFS, ClassifyOutcome, DEDICATED_CATEGORIES, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE } from '@flow/shared';
@@ -150,6 +150,16 @@ export interface ClassifyOptions {
   force?: boolean;
   /** 只分这个文件的交易（解析后自动分类用） */
   fileId?: number;
+  /** 每一批开始前调用。解析暂停时在这里等待，终止时抛错。 */
+  beforeBatch?: () => Promise<void>;
+  /** 这一批请求用的取消信号。每次调用取一次新的。 */
+  signal?: () => AbortSignal | undefined;
+  /**
+   * 这一批请求结束后查看中断。
+   * 返回 pause：请求失败则重试这一批，请求已成功则照常写入。
+   * 终止时直接抛错。
+   */
+  afterRequest?: () => 'pause' | null;
 }
 
 /** 项目背景 + 分类定义 + 改判示例 + 一批交易 → 分类（§5.4） */
@@ -234,14 +244,28 @@ ${txLines.join('\n')}
 
 输出 JSON（每笔一条，id 必须与输入一致）：`;
 
-    const content = await llmChat(
-      settings.llmBase,
-      settings.llmModel,
-      settings.llmExtraHeader || undefined,
-      system,
-      user,
-      { jsonMode: true, maxTokens: 4000, timeoutMs: 300_000 },
-    );
+    let content = '';
+    for (;;) {
+      await opts.beforeBatch?.();
+      try {
+        content = await llmChat(
+          settings.llmBase,
+          settings.llmModel,
+          settings.llmExtraHeader || undefined,
+          system,
+          user,
+          { jsonMode: true, maxTokens: 4000, timeoutMs: 300_000, signal: opts.signal?.() },
+        );
+        opts.afterRequest?.();
+        break;
+      } catch (e) {
+        if (isAbortError(e)) {
+          const decision = opts.afterRequest?.() ?? null;
+          if (decision === 'pause') continue;
+        }
+        throw e;
+      }
+    }
     const parsed = extractJson<{ results?: Array<{ id?: unknown; category?: unknown; confidence?: unknown }> }>(content);
     const byId = new Map(batch.map((r) => [Number(r.id), r]));
     for (const item of parsed.results ?? []) {

@@ -10,7 +10,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import { Router } from 'express';
 import { db } from './db.js';
-import { parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
+import { fileResumeHint, parseQueue, recomputeFileBalanceReviews, refreshTaskFilesAuto } from './parse.js';
 import { bulkCategory, setTxCategory } from './categorize.js';
 import { TaskListItem, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
@@ -361,10 +361,22 @@ export const filesRouter = Router();
 /** 单文件解析/重解析（入队；状态置 parsing 由队列负责） */
 filesRouter.post('/:id/parse', (req, res) => {
   const id = Number(req.params.id);
-  const r = db.prepare('SELECT id, status FROM files WHERE id = ?').get(id) as { id: number; status: string } | undefined;
+  const r = db.prepare('SELECT id, status, task_id, checkpoint FROM files WHERE id = ?').get(id) as
+    | { id: number; status: string; task_id: number; checkpoint: string | null }
+    | undefined;
   if (!r) return res.status(404).json({ error: '文件不存在' });
-  const queued = parseQueue.enqueue(id);
-  res.json({ ok: true, queued, alreadyRunning: !queued });
+  const bodyFresh = Boolean((req.body as { fresh?: boolean } | undefined)?.fresh);
+  const fresh = bodyFresh || r.status === 'done' || r.status === 'needs_review';
+  const hint = fileResumeHint(r.checkpoint);
+  const queued = parseQueue.enqueue(id, { fresh });
+  res.json({
+    ok: true,
+    queued,
+    resumed: queued && !fresh && !!hint,
+    resumePage: !fresh ? hint?.nextPage : undefined,
+    alreadyRunning: !queued,
+    paused: parseQueue.isPaused(Number(r.task_id)),
+  });
 });
 
 /** 任务级：重扫目录，并把尚未在解析中的 PDF 全部入队（含已完成/待复核，按当前规则重抽） */
@@ -376,12 +388,41 @@ filesRouter.post('/task/:taskId/parse', (req, res) => {
   if (!task) return res.status(404).json({ error: '任务不存在' });
   const added = refreshTaskFilesAuto(taskId, task.folder_path);
   let queued = 0;
-  for (const r of db.prepare(`SELECT id FROM files WHERE task_id = ? AND status != 'parsing'`).all(taskId) as {
+  let resumed = 0;
+  for (const r of db.prepare(`SELECT id, status, checkpoint FROM files WHERE task_id = ? AND status != 'parsing'`).all(taskId) as {
     id: number;
+    status: string;
+    checkpoint: string | null;
   }[]) {
-    if (parseQueue.enqueue(r.id)) queued++;
+    const fresh = r.status === 'done' || r.status === 'needs_review';
+    const willResume = !fresh && !!fileResumeHint(r.checkpoint);
+    if (parseQueue.enqueue(r.id, { fresh })) {
+      queued++;
+      if (willResume) resumed++;
+    }
   }
-  res.json({ ok: true, added, queued });
+  res.json({ ok: true, added, queued, resumed, paused: parseQueue.isPaused(taskId) });
+});
+
+filesRouter.post('/task/:taskId/pause', (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId)) return res.status(404).json({ error: '任务不存在' });
+  const files = parseQueue.pauseTask(taskId);
+  res.json({ ok: true, files, paused: parseQueue.isPaused(taskId) });
+});
+
+filesRouter.post('/task/:taskId/resume', (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId)) return res.status(404).json({ error: '任务不存在' });
+  const files = parseQueue.resumeTask(taskId);
+  res.json({ ok: true, files, paused: false });
+});
+
+filesRouter.post('/task/:taskId/stop', (req, res) => {
+  const taskId = Number(req.params.taskId);
+  if (!db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(taskId)) return res.status(404).json({ error: '任务不存在' });
+  const files = parseQueue.stopTask(taskId);
+  res.json({ ok: true, files, paused: false });
 });
 
 /** 把这份流水的本方账号改成已登记的募资专户。只改文件上的银行、账号、户名，不动每一笔交易。 */

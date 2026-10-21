@@ -299,7 +299,8 @@ select:focus-visible {
 /* 实体条（项目/任务详情顶部：名称 + 路径 + 状态 + 菜单） */
 .entity-bar {
   display: flex;
-  align-items: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 12px;
   padding: 14px 16px;
   margin-bottom: 16px;
@@ -310,18 +311,32 @@ select:focus-visible {
 }
 
 .entity-bar-main {
-  flex: 1;
+  flex: 1 1 18em;
   min-width: 0;
 }
 
 .entity-bar-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
   font-size: 16px;
   font-weight: 600;
   color: var(--ui-text);
+}
+
+.entity-bar-name {
+  min-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entity-bar .page-header-actions {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .entity-bar-path {
@@ -1920,6 +1935,11 @@ select.input {
   font-size: 13px;
 }
 
+.parse-card-now.is-paused,
+.parse-progress-now.is-paused {
+  color: var(--ui-warning);
+}
+
 .parse-steps {
   list-style: none;
   margin: 0;
@@ -1939,6 +1959,11 @@ select.input {
 
 .parse-step.run {
   color: var(--ui-text);
+  font-weight: 600;
+}
+
+.parse-step.pause {
+  color: var(--ui-warning);
   font-weight: 600;
 }
 

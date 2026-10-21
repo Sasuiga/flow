@@ -1,4 +1,4 @@
-import { Check, ChevronRight, Loader2, Minus, Play, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
+import { Check, ChevronRight, Loader2, Minus, Pause, Play, RefreshCw, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BankFile, FileStatus, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
 import { api, TaskDetail } from '../api';
@@ -29,6 +29,8 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
   const [error, setError] = useState<string | undefined>();
   const [notice, setNotice] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [controlBusy, setControlBusy] = useState(false);
+  const [halting, setHalting] = useState(false);
   const [assignFile, setAssignFile] = useState<BankFile | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -47,6 +49,13 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
 
   const task = detail?.task;
   const anyParsing = detail?.files.some((f) => f.status === 'parsing') ?? false;
+  const paused = Boolean(detail?.parsePaused) && !halting;
+  const unfinished = detail?.files.filter((f) => f.status !== 'done' && f.status !== 'needs_review' && f.status !== 'parsing') ?? [];
+  const continueLabel = unfinished.length > 0 && unfinished.every((f) => f.resumePage) && !anyParsing ? '继续解析' : '全部解析';
+
+  useEffect(() => {
+    if (!anyParsing) setHalting(false);
+  }, [anyParsing]);
 
   // M2：解析中每 4s 轮询一次（chokidar 自动解析 + 队列推进）
   useEffect(() => {
@@ -67,7 +76,10 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     setNotice(undefined);
     try {
       const r = await api.refreshTask(taskId);
-      setNotice(`重新扫描完成，新增 ${r.added} 份 PDF（新文件自动入解析队列）`);
+      setNotice(
+        `重新扫描完成，新增 ${r.added} 份 PDF` +
+          (r.resumed ? `，${r.resumed} 份从上次停下的页继续` : '（新文件自动入解析队列）'),
+      );
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -77,10 +89,15 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
   }
 
   async function doParseAll() {
-    const doneCount = detail?.files.filter((f) => f.txCount > 0 && f.status !== 'parsing').length ?? 0;
+    const doneCount =
+      detail?.files.filter((f) => (f.status === 'done' || f.status === 'needs_review') && f.txCount > 0).length ?? 0;
+    const resumeCount =
+      detail?.files.filter((f) => f.resumePage && f.status !== 'done' && f.status !== 'needs_review' && f.status !== 'parsing')
+        .length ?? 0;
     if (doneCount > 0) {
       const ok = await confirmDialog(
-        `其中 ${doneCount} 份已经解析过。重新解析会按当前规则重抽，原有交易（含人工修改）会被替换。`,
+        `其中 ${doneCount} 份已经解析过，重新解析会替换原有交易（含人工修改）。` +
+          (resumeCount > 0 ? `另外 ${resumeCount} 份上次没读完，会从停下的那一页继续。` : ''),
         { title: '重新解析已完成的文件', confirmLabel: '重新解析' },
       );
       if (!ok) return;
@@ -89,9 +106,16 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     setNotice(undefined);
     try {
       const r = await api.parseTask(taskId);
+      const pausedNote = r.paused ? '。当前已暂停，点继续后开始' : '';
       setNotice(
         r.queued > 0
-          ? `已加入解析队列 ${r.queued} 份${r.added ? `（新扫描 ${r.added} 份）` : ''}，完成后交易会按新规则替换`
+          ? r.resumed && r.resumed === r.queued
+            ? `已继续 ${r.queued} 份，从上次停下的页接着读${pausedNote}`
+            : r.resumed
+              ? `已加入解析队列 ${r.queued} 份，其中 ${r.resumed} 份从上次停下的页继续${pausedNote}`
+              : `已加入解析队列 ${r.queued} 份${r.added ? `（新扫描 ${r.added} 份）` : ''}${
+                  pausedNote || '，完成后交易会按新规则替换'
+                }`
           : '没有可解析的文件（可能都在解析中）',
       );
       await load();
@@ -102,8 +126,15 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     }
   }
 
-  async function doParse(f: BankFile) {
-    if (f.txCount > 0) {
+  async function doParse(f: BankFile, fresh = false) {
+    const resume = !fresh && !!f.resumePage && f.status !== 'done' && f.status !== 'needs_review';
+    if (fresh) {
+      const ok = await confirmDialog(
+        `从头解析「${f.relPath}」？已经读完的页会丢掉，从第 1 页重来。`,
+        { title: '从头解析', confirmLabel: '从头解析' },
+      );
+      if (!ok) return;
+    } else if (!resume && f.txCount > 0) {
       const ok = await confirmDialog(`重新解析「${f.relPath}」？原有 ${f.txCount} 笔交易（含人工修改）会被替换。`, {
         title: '重新解析',
         confirmLabel: '重新解析',
@@ -112,8 +143,14 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     }
     setNotice(undefined);
     try {
-      const r = await api.parseFile(f.id);
-      setNotice(r.queued ? `「${f.relPath}」已加入解析队列，完成后会替换原交易` : '该文件正在解析中');
+      const r = await api.parseFile(f.id, fresh);
+      setNotice(
+        !r.queued
+          ? '该文件正在解析中'
+          : r.resumed
+            ? `「${f.relPath}」从第 ${r.resumePage ?? f.resumePage} 页继续${r.paused ? '。当前已暂停，点继续后开始' : ''}`
+            : `「${f.relPath}」已加入解析队列${r.paused ? '。当前已暂停，点继续后开始' : '，完成后会替换原交易'}`,
+      );
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -139,6 +176,63 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function doPause() {
+    setControlBusy(true);
+    setNotice(undefined);
+    try {
+      const r = await api.pauseTaskParse(taskId);
+      setNotice(
+        r.files > 0
+          ? '已暂停。正在进行的这一步会停下来，继续后从这一步重做；已经读完的页会保留。'
+          : '当前没有正在解析的文件',
+      );
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setControlBusy(false);
+    }
+  }
+
+  async function doResume() {
+    setControlBusy(true);
+    setNotice(undefined);
+    try {
+      await api.resumeTaskParse(taskId);
+      setNotice('已继续解析');
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setControlBusy(false);
+    }
+  }
+
+  async function doStop() {
+    const ok = await confirmDialog(
+      '终止后，还没写入的识别结果会丢掉。已经解析完的文件，以及这份文件里原来的交易，都保留。',
+      { title: '终止解析', confirmLabel: '终止', danger: true },
+    );
+    if (!ok) return;
+    setHalting(true);
+    setControlBusy(true);
+    setNotice(undefined);
+    try {
+      const r = await api.stopTaskParse(taskId);
+      setNotice(
+        r.files > 0
+          ? `已终止解析（${r.files} 份）。没写入的识别结果已丢掉，原来的交易还在。`
+          : '当前没有正在解析的文件',
+      );
+      await load();
+    } catch (e) {
+      setHalting(false);
+      setError((e as Error).message);
+    } finally {
+      setControlBusy(false);
     }
   }
 
@@ -182,22 +276,53 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
         <div className="entity-bar">
           <div className="entity-bar-main">
             <div className="entity-bar-title">
-              {task.name}
+              <span className="entity-bar-name">{task.name}</span>
               {task.dirMissing ? <span className="chip chip-danger">目录丢失</span> : null}
               <span className="chip chip-muted">
                 {task.fileCount} 文件 · {task.txCount} 笔交易
               </span>
               {anyParsing ? (
-                <span className="chip chip-primary">
-                  <RefreshCw size={11} className="spin" style={{ marginRight: 4 }} />
-                  解析中…
+                <span className={`chip ${paused || halting ? 'chip-warning' : 'chip-primary'}`}>
+                  {paused ? (
+                    <Pause size={11} style={{ marginRight: 4 }} />
+                  ) : halting ? (
+                    <Square size={11} style={{ marginRight: 4 }} />
+                  ) : (
+                    <RefreshCw size={11} className="spin" style={{ marginRight: 4 }} />
+                  )}
+                  {halting ? '正在终止' : paused ? '已暂停' : '解析中…'}
                 </span>
               ) : null}
             </div>
           </div>
           <div className="page-header-actions" style={{ marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {anyParsing ? (
+              halting ? (
+                <button className="secondary-button" disabled>
+                  <Loader2 size={13} className="spin" /> 正在终止
+                </button>
+              ) : paused ? (
+                <>
+                  <button className="secondary-button" disabled={controlBusy} onClick={() => void doResume()}>
+                    <Play size={13} /> 继续
+                  </button>
+                  <button className="secondary-button" disabled={controlBusy} onClick={() => void doStop()}>
+                    <Square size={13} /> 终止
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="secondary-button" disabled={controlBusy} onClick={() => void doPause()}>
+                    <Pause size={13} /> 暂停
+                  </button>
+                  <button className="secondary-button" disabled={controlBusy} onClick={() => void doStop()}>
+                    <Square size={13} /> 终止
+                  </button>
+                </>
+              )
+            ) : null}
             <button className="secondary-button" disabled={task.dirMissing || busy} onClick={() => void doParseAll()}>
-              <Play size={13} /> 全部解析
+              <Play size={13} /> {continueLabel}
             </button>
             <button className="secondary-button" disabled={busy} onClick={() => void doCategorize()}>
               {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
@@ -260,7 +385,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
           </div>
         ) : (
           <>
-            <ParseProgress files={detail.files} />
+            <ParseProgress files={detail.files} paused={paused} halting={halting} />
             <ParseBoards files={detail.files} />
             <ListRowHeader
               withMenu
@@ -273,6 +398,9 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
             />
             {detail.files.map((f) => {
               const chip = STATUS_CHIP[f.status] ?? { cls: 'chip-muted', label: f.status };
+              const rowHalting = halting && f.status === 'parsing';
+              const rowPaused =
+                f.status === 'parsing' && (paused || f.progress?.some((s) => s.state === 'pause'));
               const accounts = detail.accounts ?? [];
               const foreign =
                 accounts.length > 0 &&
@@ -291,9 +419,16 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                         disabled: accounts.length === 0,
                         onClick: () => setAssignFile(f),
                       },
-                      f.status === 'done' || f.status === 'needs_review'
-                        ? { label: '重新解析', onClick: () => void doParse(f) }
-                        : { label: '开始解析', disabled: f.status === 'parsing', onClick: () => void doParse(f) },
+                      ...(f.resumePage && f.status !== 'done' && f.status !== 'needs_review'
+                        ? [
+                            { label: `从第 ${f.resumePage} 页继续`, onClick: () => void doParse(f) },
+                            { label: '从头解析', onClick: () => void doParse(f, true) },
+                          ]
+                        : [
+                            f.status === 'done' || f.status === 'needs_review'
+                              ? { label: '重新解析', onClick: () => void doParse(f) }
+                              : { label: '开始解析', disabled: f.status === 'parsing', onClick: () => void doParse(f) },
+                          ]),
                       { label: '删除登记', danger: true, onClick: () => void doRemove(f) },
                     ]}
                   >
@@ -307,9 +442,11 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                         ) : null}
                       </span>
                       <span className="file-col-status">
-                        <span className={`chip ${chip.cls}`}>
-                          {f.status === 'parsing' ? <RefreshCw size={11} className="spin" style={{ marginRight: 4 }} /> : null}
-                          {chip.label}
+                        <span className={`chip ${rowHalting || rowPaused ? 'chip-warning' : chip.cls}`}>
+                          {f.status === 'parsing' && !rowPaused && !rowHalting ? (
+                            <RefreshCw size={11} className="spin" style={{ marginRight: 4 }} />
+                          ) : null}
+                          {rowHalting ? '正在终止' : rowPaused ? '已暂停' : chip.label}
                         </span>
                       </span>
                       <span className={`list-row-col-count${f.txCount === 0 ? ' empty' : ''}`}>{f.txCount}</span>
@@ -460,7 +597,11 @@ function AccountCoverage({ accounts, files }: { accounts: ProjectAccount[]; file
   );
 }
 
-function ParseProgress({ files }: { files: BankFile[] }) {
+function currentParseStep(steps: ParseStep[]) {
+  return steps.find((s) => s.state === 'pause') ?? steps.find((s) => s.state === 'run' || s.state === 'fail');
+}
+
+function ParseProgress({ files, paused, halting }: { files: BankFile[]; paused: boolean; halting: boolean }) {
   if (files.length === 0) return null;
   const count = (status: FileStatus) => files.filter((f) => f.status === status).length;
   const done = count('done') + count('needs_review');
@@ -469,7 +610,7 @@ function ParseProgress({ files }: { files: BankFile[] }) {
   const failed = count('error');
   const ratio = files.length === 0 ? 0 : done / files.length;
   const current = files.find((f) => f.status === 'parsing');
-  const step = current?.progress?.find((s) => s.state === 'run' || s.state === 'fail');
+  const step = current?.progress ? currentParseStep(current.progress) : undefined;
   return (
     <div className="parse-progress">
       <div className="parse-progress-head">
@@ -483,12 +624,12 @@ function ParseProgress({ files }: { files: BankFile[] }) {
       </div>
       <div className="parse-progress-meta">
         {pending > 0 ? <span>待解析 {pending}</span> : null}
-        {parsing > 0 ? <span>解析中 {parsing}</span> : null}
+        {parsing > 0 ? <span>{halting ? '正在终止' : paused ? '已暂停' : '解析中'} {parsing}</span> : null}
         {done > 0 ? <span>已完成 {done}</span> : null}
         {failed > 0 ? <span>错误 {failed}</span> : null}
       </div>
       {current ? (
-        <div className="parse-progress-now" title={current.relPath}>
+        <div className={`parse-progress-now${paused || step?.state === 'pause' ? ' is-paused' : ''}`} title={current.relPath}>
           {current.relPath}
           {step ? ` · ${step.label}${step.detail ? ` ${step.detail}` : ''}` : ''}
         </div>
@@ -507,12 +648,14 @@ function ParseBoards({ files }: { files: BankFile[] }) {
           f.progress && f.progress.length > 0
             ? f.progress
             : [{ id: 'read', label: '读取 PDF', state: 'run', detail: '正在开始' }];
-        const current = steps.find((s) => s.state === 'run' || s.state === 'fail');
+        const current = currentParseStep(steps);
         return (
           <section key={f.id} className="parse-card">
             <header className="parse-card-head">
               <span className="parse-card-file">{f.relPath}</span>
-              <span className="parse-card-now">{current ? `${current.label}${current.detail ? ` · ${current.detail}` : ''}` : '处理中'}</span>
+              <span className={`parse-card-now${current?.state === 'pause' ? ' is-paused' : ''}`}>
+                {current ? `${current.label}${current.detail ? ` · ${current.detail}` : ''}` : '处理中'}
+              </span>
             </header>
             <ol className="parse-steps">
               {steps.map((step) => (
@@ -531,6 +674,7 @@ function ParseBoards({ files }: { files: BankFile[] }) {
 }
 
 function stepMark(state: ParseStep['state']) {
+  if (state === 'pause') return <Pause size={14} />;
   if (state === 'run') return <Loader2 size={14} className="spin" />;
   if (state === 'done') return <Check size={14} />;
   if (state === 'fail') return <X size={14} />;

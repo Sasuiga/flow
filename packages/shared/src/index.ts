@@ -3,8 +3,8 @@
 export type Direction = 'in' | 'out';
 export type FileStatus = 'scanned' | 'parsing' | 'done' | 'error' | 'needs_review';
 
-/** 解析进度一步：wait 未到 / run 进行中 / done 完成 / skip 本文件不需要 / fail 停在这里 */
-export type ParseStepState = 'wait' | 'run' | 'done' | 'skip' | 'fail';
+/** 解析进度一步：wait 未到 / run 进行中 / pause 已暂停 / done 完成 / skip 本文件不需要 / fail 停在这里 */
+export type ParseStepState = 'wait' | 'run' | 'pause' | 'done' | 'skip' | 'fail';
 
 export interface ParseStep {
   id: string;
@@ -155,6 +155,10 @@ export interface BankFile {
   error?: string;
   /** 解析过程；完成后清空。出错时保留，用来看停在哪一步 */
   progress?: ParseStep[];
+  /** 上次已读完的页之后，下一页页码。有值时再次解析从这里继续 */
+  resumePage?: number;
+  /** 这份 PDF 的总页数，和 resumePage 一起用 */
+  resumeTotal?: number;
   updatedAt: string;
 }
 

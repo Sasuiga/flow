@@ -1,5 +1,9 @@
 import { ProbeResult } from '@flow/shared';
 
+export function isAbortError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'AbortError';
+}
+
 const strip = (u: string) => u.replace(/\/+$/, '');
 
 /** 解析 "Name: value" 形式的自定义请求头；空/非法返回 undefined */
@@ -71,7 +75,7 @@ export async function llmChat(
   extraHeader: string | undefined,
   system: string,
   user: string,
-  opts: { jsonMode?: boolean; maxTokens?: number; timeoutMs?: number; images?: Buffer[] } = {},
+  opts: { jsonMode?: boolean; maxTokens?: number; timeoutMs?: number; images?: Buffer[]; signal?: AbortSignal } = {},
 ): Promise<string> {
   const userContent =
     opts.images && opts.images.length > 0
@@ -93,15 +97,18 @@ export async function llmChat(
   };
   if (opts.jsonMode) body.response_format = { type: 'json_object' };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+  const timeout = AbortSignal.timeout(opts.timeoutMs ?? 900_000);
+  const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
   let res: Response;
   try {
     res = await fetch(strip(base) + '/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...parseExtraHeader(extraHeader ?? '') },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 900_000),
+      signal,
     });
   } catch (e) {
+    if (opts.signal?.aborted) throw e;
     const err = e as Error & { cause?: { code?: string; message?: string } };
     const cause = err.cause?.code || err.cause?.message;
     throw new Error(`LLM 端点不可达（${strip(base)}）：${err.message}${cause ? `（${cause}）` : ''}`);

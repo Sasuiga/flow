@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db } from './db.js';
 import { dirExists, friendlyFsError, openFolder, resolveEntityLocation, scanPdfFiles } from './fsutil.js';
 import { toProjectView } from './clients.js';
-import { refreshTaskFilesAuto } from './parse.js';
+import { enqueueResumable, fileResumeHint, parseQueue, refreshTaskFilesAuto } from './parse.js';
 import { categoryFocus } from './categoryFocus.js';
 import { dedicatedBalances } from './reports.js';
 import { cashLots, saveCashSplit } from './cashLots.js';
@@ -46,6 +46,12 @@ function parseProgress(raw: unknown): ParseStep[] | undefined {
   }
 }
 
+function resumeFields(raw: unknown): { resumePage?: number; resumeTotal?: number } {
+  const hint = fileResumeHint(raw);
+  if (!hint) return {};
+  return { resumePage: hint.nextPage, resumeTotal: hint.totalPages || undefined };
+}
+
 function toBankFile(row: Record<string, unknown>): BankFile {
   return {
     id: Number(row.id),
@@ -60,6 +66,7 @@ function toBankFile(row: Record<string, unknown>): BankFile {
     txCount: Number(row.tx_count),
     error: (row.error as string | undefined) ?? undefined,
     progress: parseProgress(row.progress),
+    ...(row.status === 'error' || row.status === 'scanned' ? resumeFields(row.checkpoint) : {}),
     updatedAt: row.updated_at as string,
   };
 }
@@ -478,6 +485,7 @@ tasksRouter.get('/:id', (req, res) => {
     client,
     files,
     accounts: listProjectAccounts(Number(row.project_id)),
+    parsePaused: parseQueue.isPaused(id),
   });
 });
 
@@ -487,8 +495,9 @@ tasksRouter.post('/:id/refresh', (req, res) => {
   const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
   if (!row) return res.status(404).json({ error: '任务不存在' });
   const added = refreshTaskFilesAuto(id, row.folder_path as string);
+  const resumed = enqueueResumable(id);
   db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ?').run(now(), id);
-  res.json({ ok: true, added });
+  res.json({ ok: true, added, resumed });
 });
 
 tasksRouter.post('/:id/open', (req, res) => {
