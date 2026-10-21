@@ -11,9 +11,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { getSettings } from './settings.js';
+import { getSettings, llmProfileById } from './settings.js';
 import { extractJson, isAbortError, llmChat, probeLLM } from './ai.js';
-import { ParseStep, ParseStepState } from '@flow/shared';
+import { LlmProfile, ParseStep, ParseStepState } from '@flow/shared';
 import { classifyTask } from './categorize.js';
 import { scanPdfFiles } from './fsutil.js';
 
@@ -191,19 +191,23 @@ async function openPdf(pdfPath: string) {
   return task;
 }
 
-/** 每页渲染成一张 JPEG。长边约 2200 像素，表格线还在，体积适合视觉模型。 */
+/** 每页渲染成一张 JPEG。长边约 2200 像素，表格线还在，体积适合视觉模型。onlyPages 只渲染这些页。 */
 export async function renderPdfPages(
   pdfPath: string,
   onPage?: (done: number, total: number) => void | Promise<void>,
-): Promise<PageImage[]> {
+  onlyPages?: number[],
+): Promise<{ images: PageImage[]; totalPages: number }> {
   const canvasMod = await loadCanvas();
   const task = await openPdf(pdfPath);
   const doc = await task.promise;
   const out: PageImage[] = [];
-  const total = doc.numPages;
+  const totalPages = doc.numPages;
+  const list = onlyPages?.length
+    ? [...new Set(onlyPages.filter((p) => p >= 1 && p <= totalPages))].sort((a, b) => a - b)
+    : Array.from({ length: totalPages }, (_, i) => i + 1);
   try {
-    await onPage?.(0, total);
-    for (let p = 1; p <= total; p++) {
+    await onPage?.(0, list.length);
+    for (const p of list) {
       const page = await doc.getPage(p);
       const base = page.getViewport({ scale: 1 });
       const scale = Math.min(RENDER_LONG_EDGE / Math.max(base.width, base.height), 200 / 72);
@@ -212,12 +216,22 @@ export async function renderPdfPages(
       await page.render({ canvas: canvas as unknown as HTMLCanvasElement, viewport }).promise;
       out.push({ page: p, jpeg: canvas.toBuffer('image/jpeg', 82) });
       page.cleanup?.();
-      await onPage?.(p, total);
+      await onPage?.(out.length, list.length);
     }
   } finally {
     await task.destroy();
   }
-  return out;
+  return { images: out, totalPages };
+}
+
+export async function countPdfPages(pdfPath: string): Promise<number> {
+  const task = await openPdf(pdfPath);
+  try {
+    const doc = await task.promise;
+    return doc.numPages;
+  } finally {
+    await task.destroy();
+  }
 }
 
 /* ---------- LLM 结构化（视觉读图，一页一次，温度 0，严格 JSON） ---------- */
@@ -694,8 +708,91 @@ async function waitInterruptible(fileId: number, ms: number): Promise<void> {
   await parseQueue.gate(fileId);
 }
 
-/** 解析单个文件：整本先转图片，再逐页视觉读图并结构化。fresh 时丢掉断点，从第 1 页重读。 */
-export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolean }): Promise<ParseOutcome> {
+/** 上一页最后两笔，给指定页重读时衔接。页码不连续时用库里已经在的上一页，不用这次刚读的更早一页。 */
+function tailBeforePage(fileId: number, page: number): string | undefined {
+  const rows = db
+    .prepare(
+      `SELECT date, direction, amount, raw_text FROM transactions
+       WHERE file_id = ? AND page > 0 AND page < ?
+       ORDER BY page DESC, line_no DESC, id DESC LIMIT 2`,
+    )
+    .all(fileId, page) as Array<{ date: string | null; direction: string; amount: number; raw_text: string | null }>;
+  rows.reverse();
+  if (rows.length === 0) return undefined;
+  return rows.map((t) => t.raw_text || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n');
+}
+
+/** 只删掉这些页的交易再写入新结果。其它页不动。关注、规则命中随这些行一起去掉。 */
+function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { insertedIds: number[] } {
+  const placeholders = pages.map(() => '?').join(',');
+  const tx = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ? AND page IN (${placeholders}))`,
+    ).run(fileId, ...pages);
+    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...pages);
+    const ins = db.prepare(
+      `INSERT INTO transactions(file_id, page, line_no, date, summary, amount, direction, balance,
+        counterparty, counterparty_account, channel, confidence, review_note, raw_text, status)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    const insertedIds: number[] = [];
+    const inOrder = [...txs].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
+    for (const t of inOrder) {
+      const raw = t.raw?.trim();
+      const status = t.review ? 'needs_review' : 'ok';
+      const info = ins.run(
+        fileId,
+        t.page,
+        t.lineNo || 0,
+        t.date ?? null,
+        t.summary ?? null,
+        t.amount,
+        t.direction,
+        t.balance ?? null,
+        t.counterparty ?? null,
+        t.counterpartyAccount ?? null,
+        t.channel ?? null,
+        t.confidence,
+        t.review || null,
+        raw ?? null,
+        status,
+      );
+      insertedIds.push(Number(info.lastInsertRowid));
+    }
+    return insertedIds;
+  });
+  return { insertedIds: tx() };
+}
+
+export async function filePageMap(fileId: number): Promise<
+  | { total: number; gaps: number[]; byPage: { page: number; n: number }[] }
+  | undefined
+> {
+  const file = db.prepare('SELECT rel_path, task_id FROM files WHERE id = ?').get(fileId) as
+    | { rel_path: string; task_id: number }
+    | undefined;
+  if (!file) return undefined;
+  const task = db.prepare('SELECT folder_path FROM tasks WHERE id = ?').get(file.task_id) as { folder_path: string } | undefined;
+  if (!task) return undefined;
+  const total = await countPdfPages(path.resolve(task.folder_path, file.rel_path));
+  const rows = db
+    .prepare('SELECT page, COUNT(*) AS n FROM transactions WHERE file_id = ? AND page > 0 GROUP BY page ORDER BY page')
+    .all(fileId) as Array<{ page: number; n: number }>;
+  const have = new Set(rows.map((r) => r.page));
+  const known = rows.map((r) => r.page);
+  const gaps: number[] = [];
+  if (known.length >= 2) {
+    const last = known[known.length - 1];
+    for (let p = known[0]; p < last; p++) if (!have.has(p)) gaps.push(p);
+  }
+  return { total, gaps, byPage: rows.map((r) => ({ page: r.page, n: Number(r.n) })) };
+}
+
+/** 解析单个文件：整本先转图片，再逐页视觉读图并结构化。fresh 时丢掉断点，从第 1 页重读。pages 只重读这些页，并替换进原记录。 */
+export async function parseFileTextLayer(
+  fileId: number,
+  opts?: { fresh?: boolean; llm?: LlmProfile; pages?: number[] },
+): Promise<ParseOutcome> {
   const file = db.prepare('SELECT * FROM files WHERE id = ?').get(fileId) as Record<string, unknown> | undefined;
   if (!file) throw new Error('文件登记不存在（任务被删除？）');
   const task = db.prepare('SELECT folder_path FROM tasks WHERE id = ?').get(Number(file.task_id)) as
@@ -706,8 +803,10 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
   const prog = new ParseProgress(fileId);
   const taskId = Number(file.task_id);
   const relPath = String(file.rel_path);
-  if (opts?.fresh) setFile(fileId, { checkpoint: null });
-  const saved = opts?.fresh ? null : readCheckpoint(file.checkpoint);
+  const pageMode = (opts?.pages?.length ?? 0) > 0;
+  const wanted = pageMode ? [...new Set(opts!.pages!)].sort((a, b) => a - b) : [];
+  if (!pageMode && opts?.fresh) setFile(fileId, { checkpoint: null });
+  const saved = pageMode || opts?.fresh ? null : readCheckpoint(file.checkpoint);
 
   async function hold(step: ParseStepId, detail: string): Promise<void> {
     if (parseQueue.isPaused(taskId)) {
@@ -718,30 +817,52 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
   }
 
   let images: PageImage[];
-  prog.set('read', 'run', '打开文件');
+  let totalPages = 0;
+  prog.set('read', 'run', pageMode ? `打开文件，准备重读第 ${wanted.join('、')} 页` : '打开文件');
   try {
-    images = await renderPdfPages(absPath, async (done, total) => {
-      if (parseQueue.isPaused(taskId)) {
-        prog.set('render', 'pause', `已暂停 · 已渲染 ${done}/${total} 页，继续后接着渲染`);
+    if (pageMode) {
+      totalPages = await countPdfPages(absPath);
+      const bad = wanted.filter((p) => p > totalPages);
+      if (bad.length) {
+        const msg = `没有第 ${bad.join('、')} 页，这份 PDF 共 ${totalPages} 页。原来的交易还在。`;
+        prog.set('read', 'fail', msg);
+        return finishKept(fileId, msg);
       }
-      await parseQueue.gate(fileId);
-      if (done === 0 && total > 0) prog.set('read', 'done', `${total} 页`);
-      prog.set('render', 'run', total > 0 ? `已渲染 ${done}/${total} 页` : '打开文件');
-    });
+    }
+    const rendered = await renderPdfPages(
+      absPath,
+      async (done, total) => {
+        if (parseQueue.isPaused(taskId)) {
+          prog.set('render', 'pause', `已暂停 · 已渲染 ${done}/${total} 页，继续后接着渲染`);
+        }
+        await parseQueue.gate(fileId);
+        if (done === 0 && total > 0) prog.set('read', 'done', pageMode ? `重读 ${wanted.join('、')} 页` : `${total} 页`);
+        prog.set('render', 'run', total > 0 ? `已渲染 ${done}/${total} 页` : '打开文件');
+      },
+      pageMode ? wanted : undefined,
+    );
+    images = rendered.images;
+    totalPages = rendered.totalPages;
   } catch (e) {
     if (isStopped(e)) throw e;
     const msg = `页面渲染失败：${(e as Error).message}`;
     prog.set('render', 'fail', msg);
-    return finishError(fileId, msg);
+    return pageMode ? finishKept(fileId, `${msg}。原来的交易还在。`) : finishError(fileId, msg);
   }
   if (images.length === 0) {
     prog.set('read', 'fail', 'PDF 无页面');
-    return finishError(fileId, 'PDF 无页面');
+    return pageMode ? finishKept(fileId, '没有可重读的页面。原来的交易还在。') : finishError(fileId, 'PDF 无页面');
   }
-  prog.set('read', 'done', `${images.length} 页`);
+  prog.set('read', 'done', pageMode ? `重读第 ${wanted.join('、')} 页` : `${images.length} 页`);
   prog.set('render', 'done', `${images.length} 页`);
 
-  const s = getSettings();
+  const chosen = opts?.llm;
+  const savedSettings = chosen ? null : getSettings();
+  const s = {
+    llmBase: chosen?.base ?? savedSettings!.llmBase,
+    llmModel: chosen?.model ?? savedSettings!.llmModel,
+    llmExtraHeader: chosen?.extraHeader ?? savedSettings!.llmExtraHeader,
+  };
   const all: NormTx[] = [];
   let meta: Partial<StructuredBatch> = {};
   let prevTail: string | undefined;
@@ -761,15 +882,19 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
     for (let i = startAt; i < images.length; i++) {
       const image = images[i];
       failedPage = image.page;
-      const pageHint = `已暂停 · 第 ${image.page}/${images.length} 页，继续后重读这一页`;
+      if (pageMode) {
+        const prevRendered = i > 0 ? images[i - 1].page : 0;
+        if (image.page !== prevRendered + 1) prevTail = tailBeforePage(fileId, image.page);
+      }
+      const pageHint = `已暂停 · 第 ${image.page}/${totalPages} 页，继续后重读这一页`;
       await hold('vision', pageHint);
       let r: StructuredBatch | undefined;
       let attempt = 0;
       for (;;) {
-        prog.set('vision', 'run', `第 ${image.page}/${images.length} 页`);
+        prog.set('vision', 'run', pageMode ? `重读第 ${image.page}/${totalPages} 页` : `第 ${image.page}/${totalPages} 页`);
         prog.set('structure', 'run', `正在整理第 ${image.page} 页，已抽出 ${all.length} 笔`);
         try {
-          const got = await structurePageImage(s, relPath, image, images.length, prevTail, parseQueue.signalFor(fileId));
+          const got = await structurePageImage(s, relPath, image, totalPages, prevTail, parseQueue.signalFor(fileId));
           if (parseQueue.consumeAbort(fileId) === 'stop') throw new ParseStopped();
           r = got;
           break;
@@ -791,7 +916,7 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
             prog.set(
               'vision',
               'run',
-              `第 ${image.page}/${images.length} 页没读成，${wait / 1000} 秒后重试（${attempt}/${PAGE_RETRY_WAITS.length}）`,
+              `第 ${image.page}/${totalPages} 页没读成，${wait / 1000} 秒后重试（${attempt}/${PAGE_RETRY_WAITS.length}）`,
             );
             await waitInterruptible(fileId, wait);
             continue;
@@ -810,20 +935,81 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
       prevTail = last2.length
         ? last2.map((t) => t.raw || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n')
         : prevTail;
-      writeCheckpoint(fileId, { v: 1, donePage: image.page, totalPages: images.length, prevTail, meta, txs: all });
+      if (!pageMode) writeCheckpoint(fileId, { v: 1, donePage: image.page, totalPages: images.length, prevTail, meta, txs: all });
       prog.set('structure', 'run', `第 ${image.page} 页 ${r.txs.length} 笔，累计 ${all.length} 笔`);
     }
   } catch (e) {
     if (isStopped(e)) throw e;
     const why = isAbortError(e) ? '模型没有响应' : (e as Error).message;
     const donePage = Math.max(0, failedPage - 1);
-    const msg =
-      donePage > 0
+    const msg = pageMode
+      ? `第 ${failedPage || wanted[0]} 页没有重读成功：${why}。原来的交易还在。`
+      : donePage > 0
         ? `第 ${failedPage}/${images.length} 页失败：${why}。前 ${donePage} 页已保留，再次解析从第 ${donePage + 1} 页继续。`
         : `第 ${failedPage || 1}/${images.length} 页失败：${why}`;
     prog.set('vision', 'fail', msg);
     prog.set('structure', 'fail', msg);
-    return finishError(fileId, msg);
+    return pageMode ? finishKept(fileId, msg) : finishError(fileId, msg);
+  }
+  if (pageMode) {
+    prog.set('vision', 'done', `已重读第 ${wanted.join('、')} 页`);
+    prog.set('structure', 'done', `这几页读出 ${all.length} 笔`);
+    prog.set('balance', 'run', '按整份流水重核前后页的余额');
+    await hold('save', '已暂停，继续后把这几页补进原记录');
+    prog.set('save', 'run', `替换第 ${wanted.join('、')} 页`);
+    const replaced = replaceFilePages(fileId, wanted, all);
+    const balance = recomputeFileBalanceReviews(fileId);
+    const txCount = Number((db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n);
+    const reviewCount = balance.reviewCount;
+    prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
+    const patch: Record<string, unknown> = {
+      tx_count: txCount,
+      error: null,
+      status: reviewCount > 0 ? 'needs_review' : 'done',
+      progress: null,
+    };
+    if (!file.bank && meta.bank) patch.bank = meta.bank;
+    if (!file.account_no && meta.accountNo) patch.account_no = meta.accountNo;
+    if (!file.account_name && meta.accountName) patch.account_name = meta.accountName;
+    if (!file.period_start && meta.periodStart) patch.period_start = meta.periodStart;
+    if (!file.period_end && meta.periodEnd) patch.period_end = meta.periodEnd;
+    prog.set('save', 'done', `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`);
+    setFile(fileId, patch);
+    if (replaced.insertedIds.length > 0 && getSettings().autoCategorize) {
+      try {
+        prog.set('categorize', 'run', `补上的 ${replaced.insertedIds.length} 笔待分类`);
+        const r = await classifyTask(taskId, {
+          fileId,
+          txIds: replaced.insertedIds,
+          llm: opts?.llm,
+          beforeBatch: async () => {
+            if (parseQueue.isPaused(taskId)) prog.set('categorize', 'pause', '已暂停，继续后接着分类');
+            await parseQueue.gate(fileId);
+            prog.set('categorize', 'run', `补上的 ${replaced.insertedIds.length} 笔待分类`);
+          },
+          signal: () => parseQueue.signalFor(fileId),
+          afterRequest: () => {
+            const kind = parseQueue.consumeAbort(fileId);
+            if (kind === 'stop') throw new ParseStopped();
+            return kind === 'pause' ? 'pause' : null;
+          },
+        });
+        prog.set('categorize', 'done', r.classified > 0 ? `已分类 ${r.classified} 笔` : '无需分类');
+        setFile(fileId, { error: null });
+      } catch (e) {
+        if (isStopped(e)) {
+          prog.set('categorize', 'skip', '已终止');
+          setFile(fileId, { progress: null, error: null });
+          return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
+        }
+        prog.set('categorize', 'fail', (e as Error).message);
+        setFile(fileId, { error: `这几页已补进原记录，LLM 分类失败：${(e as Error).message}` });
+      }
+    } else {
+      prog.set('categorize', 'skip', replaced.insertedIds.length > 0 ? '自动分类已关闭' : '这几页没有新交易');
+    }
+    setFile(fileId, { progress: null });
+    return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
   }
   prog.set('vision', 'done', `${images.length} 页`);
   prog.set('structure', 'done', `共 ${all.length} 笔`);
@@ -891,6 +1077,7 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
       prog.set('categorize', 'run', `${all.length} 笔待分类`);
       const r = await classifyTask(taskId, {
         fileId,
+        llm: opts?.llm,
         beforeBatch: async () => {
           if (parseQueue.isPaused(taskId)) prog.set('categorize', 'pause', '已暂停，继续后接着分类');
           await parseQueue.gate(fileId);
@@ -920,6 +1107,16 @@ export async function parseFileTextLayer(fileId: number, opts?: { fresh?: boolea
   }
   setFile(fileId, { progress: null });
   return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount: all.length, reviewCount };
+}
+
+/** 指定页没读成：原记录留着，不把整份打成错误。 */
+function finishKept(fileId: number, msg: string): ParseOutcome {
+  const row = db.prepare('SELECT tx_count FROM files WHERE id = ?').get(fileId) as { tx_count: number } | undefined;
+  if (!row || Number(row.tx_count) <= 0) return finishError(fileId, msg);
+  const needs = db.prepare(`SELECT 1 AS n FROM transactions WHERE file_id = ? AND status = 'needs_review' LIMIT 1`).get(fileId);
+  const status = needs ? 'needs_review' : 'done';
+  setFile(fileId, { status, error: msg, progress: null });
+  return { fileId, status, txCount: Number(row.tx_count), reviewCount: 0, error: msg };
 }
 
 function finishError(fileId: number, msg: string): ParseOutcome {
@@ -988,8 +1185,12 @@ export class ParseQueue {
   private queue: number[] = [];
   private inflight = new Set<number>();
   private workerStarted = false;
-  /** 这一波解析共用一次连接测试。队列清空后作废，下一波重新测。 */
-  private batchProbe: Promise<{ ok: boolean; detail: string }> | null = null;
+  /** 这一波里每个端点测一次。队列清空后作废，下一波重新测。 */
+  private probes = new Map<string, Promise<{ ok: boolean; detail: string }>>();
+  /** 入队时选定的模型。跑完或失败后丢掉。 */
+  private llmOf = new Map<number, LlmProfile>();
+  /** 只重读这些页，结果替换进原记录。 */
+  private pagesOf = new Map<number, number[]>();
   /** 暂停的任务。文件留在队列里，正在读的文件在当前请求停下后等待。 */
   private paused = new Set<number>();
   /** 终止的文件。正在跑的那份看到后丢掉还没写入的结果。 */
@@ -1000,11 +1201,16 @@ export class ParseQueue {
   /** 这些文件从第 1 页重读，不沿用断点。已完成文件的重新解析走这里。 */
   private fresh = new Set<number>();
 
-  /** 入队（幂等：已排队/解析中则跳过）。fresh 时丢掉已读页，从第 1 页重来。返回是否入队 */
-  enqueue(fileId: number, opts?: { fresh?: boolean }): boolean {
+  /** 入队（幂等：已排队/解析中则跳过）。fresh 时丢掉已读页，从第 1 页重来。pages 只重读这些页。llmId 缺省用默认模型。返回是否入队 */
+  enqueue(fileId: number, opts?: { fresh?: boolean; llmId?: string; pages?: number[] }): boolean {
     if (opts?.fresh) this.fresh.add(fileId);
     else if (opts) this.fresh.delete(fileId);
     if (this.inflight.has(fileId) || this.queue.includes(fileId)) return false;
+    const profile = llmProfileById(opts?.llmId);
+    if (!profile) return false;
+    this.llmOf.set(fileId, profile);
+    if (opts?.pages?.length) this.pagesOf.set(fileId, opts.pages);
+    else this.pagesOf.delete(fileId);
     this.queue.push(fileId);
     if (db.prepare('SELECT 1 FROM files WHERE id = ?').get(fileId)) {
       const taskId = this.taskIdOf(fileId);
@@ -1014,7 +1220,7 @@ export class ParseQueue {
         error: null,
         progress: paused
           ? JSON.stringify([{ id: 'read', label: '排队', state: 'pause', detail: '已暂停' }])
-          : PROBE_STEP('run', '正在确认模型可达'),
+          : PROBE_STEP('run', `正在确认 ${profile.name} 可达`),
       });
     }
     return true;
@@ -1073,6 +1279,9 @@ export class ParseQueue {
     this.paused.delete(taskId);
     for (const id of queued) {
       this.stopRequested.delete(id);
+      this.llmOf.delete(id);
+      this.pagesOf.delete(id);
+      this.fresh.delete(id);
       restoreStopped(id);
     }
     for (const id of running) {
@@ -1156,14 +1365,32 @@ export class ParseQueue {
     }
   }
 
-  /** 本波第一次开跑前测一次。同一波里后进来的文件沿用这次结果。 */
-  private probeModel(): Promise<{ ok: boolean; detail: string }> {
-    if (!this.batchProbe) {
-      this.batchProbe = (async () => {
+  private profileKey(p: LlmProfile): string {
+    return `${p.base}\n${p.model}\n${p.extraHeader}`;
+  }
+
+  private profileFor(fileId: number): LlmProfile {
+    return (
+      this.llmOf.get(fileId) ??
+      llmProfileById() ?? {
+        id: 'llm-default',
+        name: '默认模型',
+        base: '',
+        model: '',
+        extraHeader: '',
+      }
+    );
+  }
+
+  /** 同一端点这一波只测一次。失败后丢掉缓存，下一份可以再测。 */
+  private probeProfile(p: LlmProfile): Promise<{ ok: boolean; detail: string }> {
+    const key = this.profileKey(p);
+    let hit = this.probes.get(key);
+    if (!hit) {
+      hit = (async () => {
         try {
-          const s = getSettings();
-          console.log(`[parse] 解析前连接测试 ${s.llmBase} 模型 ${s.llmModel || '（未填）'}`);
-          const r = await probeLLM(s.llmBase, s.llmModel, s.llmExtraHeader);
+          console.log(`[parse] 解析前连接测试 ${p.name} ${p.base} 模型 ${p.model || '（未填）'}`);
+          const r = await probeLLM(p.base, p.model, p.extraHeader);
           console.log(`[parse] 连接测试${r.ok ? '通过' : '未通过'}：${r.detail}`);
           return { ok: r.ok, detail: r.detail };
         } catch (e) {
@@ -1172,57 +1399,79 @@ export class ParseQueue {
           return { ok: false, detail };
         }
       })();
+      this.probes.set(key, hit);
     }
-    return this.batchProbe;
+    return hit;
+  }
+
+  /** 这个端点没连上：只让用它的、还没开跑的文件失败，别的模型继续。 */
+  private failProfile(p: LlmProfile, detail: string): void {
+    const key = this.profileKey(p);
+    const ids = this.queue.filter((id) => !this.isFilePaused(id) && this.profileKey(this.profileFor(id)) === key);
+    const drop = new Set(ids);
+    this.queue = this.queue.filter((id) => !drop.has(id));
+    const progress = PROBE_STEP('fail', detail);
+    for (const id of ids) {
+      const pages = this.pagesOf.get(id);
+      this.llmOf.delete(id);
+      this.pagesOf.delete(id);
+      this.fresh.delete(id);
+      if (!db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) continue;
+      if (pages?.length) {
+        finishKept(id, `模型不可达（${p.name}），第 ${pages.join('、')} 页没有重读：${detail}。原来的交易还在。`);
+        continue;
+      }
+      const resume = readCheckpoint(
+        (db.prepare('SELECT checkpoint FROM files WHERE id = ?').get(id) as { checkpoint?: string } | undefined)?.checkpoint,
+      );
+      const msg = resume
+        ? `模型不可达（${p.name}），这次没继续：${detail}。前 ${resume.donePage} 页已保留，恢复后从第 ${resume.donePage + 1} 页继续。`
+        : `模型不可达（${p.name}），未开始解析：${detail}`;
+      setFile(id, { status: 'error', error: msg, progress });
+    }
+    console.log(`[parse] ${p.name} 连接测试未通过，${ids.length} 份未开始解析`);
+    this.probes.delete(key);
   }
 
   private async pump(): Promise<void> {
     for (;;) {
       if (this.queue.length === 0 && this.inflight.size === 0) {
-        this.batchProbe = null;
+        this.probes.clear();
         this.paused.clear();
-      }
-      const runnable = this.queue.some((id) => !this.isFilePaused(id));
-      if (runnable && this.inflight.size === 0) {
-        const probe = await this.probeModel();
-        if (!probe.ok) {
-          const ids = this.queue.filter((id) => !this.isFilePaused(id));
-          this.queue = this.queue.filter((id) => this.isFilePaused(id));
-          const progress = PROBE_STEP('fail', probe.detail);
-          for (const id of ids) {
-            if (!db.prepare('SELECT 1 FROM files WHERE id = ?').get(id)) continue;
-            const resume = readCheckpoint(
-              (db.prepare('SELECT checkpoint FROM files WHERE id = ?').get(id) as { checkpoint?: string } | undefined)?.checkpoint,
-            );
-            const msg = resume
-              ? `模型不可达，这次没继续：${probe.detail}。前 ${resume.donePage} 页已保留，恢复后从第 ${resume.donePage + 1} 页继续。`
-              : `模型不可达，未开始解析：${probe.detail}`;
-            setFile(id, { status: 'error', error: msg, progress });
-          }
-          console.log(`[parse] 连接测试未通过，${ids.length} 份未开始解析`);
-          this.batchProbe = null;
-          await new Promise((r) => setTimeout(r, 1500));
-          continue;
-        }
       }
       const cap = Math.min(4, Math.max(1, getSettings().llmConcurrency));
       while (this.inflight.size < cap) {
         const idx = this.queue.findIndex((id) => !this.isFilePaused(id));
         if (idx < 0) break;
-        const [fileId] = this.queue.splice(idx, 1);
+        const fileId = this.queue[idx];
         if (this.stopRequested.has(fileId)) {
+          this.queue.splice(idx, 1);
           this.stopRequested.delete(fileId);
+          this.llmOf.delete(fileId);
+          this.pagesOf.delete(fileId);
+          this.fresh.delete(fileId);
           restoreStopped(fileId);
           continue;
         }
+        const profile = this.profileFor(fileId);
+        const probe = await this.probeProfile(profile);
+        if (!probe.ok) {
+          this.failProfile(profile, probe.detail);
+          continue;
+        }
+        const now = this.queue.indexOf(fileId);
+        if (now < 0 || this.isFilePaused(fileId)) continue;
+        this.queue.splice(now, 1);
         this.inflight.add(fileId);
-        console.log(`[parse] 开始解析 file#${fileId}（并发 ${this.inflight.size}/${cap}）`);
+        console.log(`[parse] 开始解析 file#${fileId} 模型 ${profile.name}（并发 ${this.inflight.size}/${cap}）`);
         void this.runOne(fileId).finally(() => {
           this.inflight.delete(fileId);
+          this.llmOf.delete(fileId);
+          this.pagesOf.delete(fileId);
           const taskId = this.taskIdOf(fileId);
           if (taskId != null) this.releasePauseIfIdle(taskId);
           if (this.inflight.size === 0 && this.queue.length === 0) {
-            this.batchProbe = null;
+            this.probes.clear();
             this.paused.clear();
           }
         });
@@ -1246,16 +1495,20 @@ export class ParseQueue {
     this.controllers.set(fileId, new AbortController());
     const fresh = this.fresh.has(fileId);
     this.fresh.delete(fileId);
+    const llm = this.llmOf.get(fileId);
+    const pages = this.pagesOf.get(fileId);
     setFile(fileId, { status: 'parsing', error: null, progress: null });
     try {
-      await parseFileTextLayer(fileId, { fresh });
+      await parseFileTextLayer(fileId, { fresh: pages?.length ? false : fresh, llm, pages });
     } catch (e) {
       if (isStopped(e)) {
         console.log(`[parse] 已终止 file#${fileId}`);
         restoreStopped(fileId);
         return;
       }
-      finishError(fileId, (e as Error).message);
+      const msg = (e as Error).message;
+      if (pages?.length) finishKept(fileId, `${msg}。原来的交易还在。`);
+      else finishError(fileId, msg);
     } finally {
       this.controllers.delete(fileId);
       this.abortKind.delete(fileId);

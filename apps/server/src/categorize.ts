@@ -150,6 +150,8 @@ export interface ClassifyOptions {
   force?: boolean;
   /** 只分这个文件的交易（解析后自动分类用） */
   fileId?: number;
+  /** 只分这些新写入的交易（指定页补解析用） */
+  txIds?: number[];
   /** 每一批开始前调用。解析暂停时在这里等待，终止时抛错。 */
   beforeBatch?: () => Promise<void>;
   /** 这一批请求用的取消信号。每次调用取一次新的。 */
@@ -160,6 +162,8 @@ export interface ClassifyOptions {
    * 终止时直接抛错。
    */
   afterRequest?: () => 'pause' | null;
+  /** 这次解析选定的模型。不传则用设置里的默认模型。 */
+  llm?: { base: string; model: string; extraHeader: string };
 }
 
 /** 项目背景 + 分类定义 + 改判示例 + 一批交易 → 分类（§5.4） */
@@ -169,11 +173,13 @@ export async function classifyTask(taskId: number, opts: ClassifyOptions = {}): 
   const cats = getCategorySet();
 
   const fileClause = opts.fileId ? 'AND t.file_id = ?' : '';
+  const idClause = opts.txIds?.length ? `AND t.id IN (${opts.txIds.map(() => '?').join(',')})` : '';
   const srcClause = opts.force
     ? "AND (t.category IS NULL OR t.category_src != 'manual')"
     : 'AND t.category IS NULL';
   const args: unknown[] = [taskId];
   if (opts.fileId) args.push(opts.fileId);
+  if (opts.txIds?.length) args.push(...opts.txIds);
   const rows = db
     .prepare(
       `SELECT t.id, t.date, t.summary, t.amount, t.direction, t.counterparty, t.counterparty_account,
@@ -185,7 +191,7 @@ export async function classifyTask(taskId: number, opts: ClassifyOptions = {}): 
          ON fua.account_key = UPPER(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(f.account_no, ''), ' ', ''), char(9), ''), '-', ''), '　', ''))
         AND fua.project_id = (SELECT project_id FROM tasks WHERE id = f.task_id)
        LEFT JOIN fund_uses fu ON fu.id = fua.fund_use_id
-       WHERE f.task_id = ? ${fileClause} ${srcClause}
+       WHERE f.task_id = ? ${fileClause} ${idClause} ${srcClause}
        ORDER BY t.date IS NULL, t.date, f.rel_path, t.page, t.line_no, t.id`,
     )
     .all(...args) as Array<Record<string, unknown>>;
@@ -193,7 +199,10 @@ export async function classifyTask(taskId: number, opts: ClassifyOptions = {}): 
     return { total: 0, classified: 0, lowConfidence: 0, message: '没有待分类的交易' };
   }
 
-  const settings = getSettings();
+  const saved = getSettings();
+  const settings = opts.llm
+    ? { ...saved, llmBase: opts.llm.base, llmModel: opts.llm.model, llmExtraHeader: opts.llm.extraHeader }
+    : saved;
   const examples = manualExamples();
   const catDefs = cats
     .map((c) => `- ${c}：${CATEGORY_DEFS[c] ?? '自定义分类，按名称含义归类'}`)

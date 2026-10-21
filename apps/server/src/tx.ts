@@ -11,12 +11,14 @@ import path from 'node:path';
 import { Router } from 'express';
 import { db } from './db.js';
 import {
+  filePageMap,
   fileResumeHint,
   normalizeBankDate,
   parseQueue,
   recomputeFileBalanceReviews,
   refreshTaskFilesAuto,
 } from './parse.js';
+import { llmProfileById } from './settings.js';
 import { bulkCategory, setTxCategory } from './categorize.js';
 import { TaskListItem, TRANSIT_FUND_USE_LABEL, TRANSIT_USE_ROLE, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 
@@ -415,17 +417,50 @@ function andWhere(whereSql: string, extra: string): string {
 
 export const filesRouter = Router();
 
-/** 单文件解析/重解析（入队；状态置 parsing 由队列负责） */
+function llmIdOf(body: unknown): string | undefined {
+  const id = (body as { llmId?: unknown } | undefined)?.llmId;
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+/** 指定页。没传 pages 返回 undefined；传了但不合法返回 null。 */
+function pagesOf(body: unknown): number[] | undefined | null {
+  const raw = (body as { pages?: unknown } | undefined)?.pages;
+  if (raw == null) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const nums = raw.map((n) => Number(n));
+  if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > 2000)) return null;
+  const pages = [...new Set(nums)].sort((a, b) => a - b);
+  if (pages.length === 0 || pages.length > 40) return null;
+  return pages;
+}
+
+filesRouter.get('/:id/pages', async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const info = await filePageMap(id);
+    if (!info) return res.status(404).json({ error: '文件不存在' });
+    res.json(info);
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** 单文件解析/重解析（入队；状态置 parsing 由队列负责）。pages 只重读这些页并替换进原记录。 */
 filesRouter.post('/:id/parse', (req, res) => {
   const id = Number(req.params.id);
-  const r = db.prepare('SELECT id, status, task_id, checkpoint FROM files WHERE id = ?').get(id) as
-    | { id: number; status: string; task_id: number; checkpoint: string | null }
+  const r = db.prepare('SELECT id, status, task_id, checkpoint, tx_count FROM files WHERE id = ?').get(id) as
+    | { id: number; status: string; task_id: number; checkpoint: string | null; tx_count: number }
     | undefined;
   if (!r) return res.status(404).json({ error: '文件不存在' });
+  const llmId = llmIdOf(req.body);
+  if (llmId && !llmProfileById(llmId)) return res.status(400).json({ error: '所选模型不存在，请到设置里重新添加' });
+  const pages = pagesOf(req.body);
+  if (pages === null) return res.status(400).json({ error: '页码不正确，请填 1 到 2000 之间的页，一次最多 40 页' });
+  if (pages && Number(r.tx_count) <= 0) return res.status(400).json({ error: '还没有原记录，请先整份解析' });
   const bodyFresh = Boolean((req.body as { fresh?: boolean } | undefined)?.fresh);
-  const fresh = bodyFresh || r.status === 'done' || r.status === 'needs_review';
+  const fresh = pages ? false : bodyFresh || r.status === 'done' || r.status === 'needs_review';
   const hint = fileResumeHint(r.checkpoint);
-  const queued = parseQueue.enqueue(id, { fresh });
+  const queued = parseQueue.enqueue(id, { fresh, llmId, pages });
   res.json({
     ok: true,
     queued,
@@ -443,6 +478,8 @@ filesRouter.post('/task/:taskId/parse', (req, res) => {
     | { id: number; folder_path: string }
     | undefined;
   if (!task) return res.status(404).json({ error: '任务不存在' });
+  const llmId = llmIdOf(req.body);
+  if (llmId && !llmProfileById(llmId)) return res.status(400).json({ error: '所选模型不存在，请到设置里重新添加' });
   const added = refreshTaskFilesAuto(taskId, task.folder_path);
   let queued = 0;
   let resumed = 0;
@@ -453,7 +490,7 @@ filesRouter.post('/task/:taskId/parse', (req, res) => {
   }[]) {
     const fresh = r.status === 'done' || r.status === 'needs_review';
     const willResume = !fresh && !!fileResumeHint(r.checkpoint);
-    if (parseQueue.enqueue(r.id, { fresh })) {
+    if (parseQueue.enqueue(r.id, { fresh, llmId })) {
       queued++;
       if (willResume) resumed++;
     }

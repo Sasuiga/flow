@@ -1,10 +1,10 @@
 import { Check, ChevronRight, Loader2, Minus, Pause, Play, RefreshCw, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BankFile, FileStatus, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
+import { BankFile, FileStatus, LlmProfile, normAccountNo, ParseStep, ProjectAccount } from '@flow/shared';
 import { api, TaskDetail } from '../api';
 import { ListRow, ListRowHeader } from '../components/ListRow';
 import { Modal } from '../components/Modal';
-import { confirmDialog } from '../lib/confirm';
+import { confirmDialog, pickLlmDialog, pickPagesDialog } from '../lib/confirm';
 import { formatDateTime } from '../lib/format';
 
 const STATUS_CHIP: Record<FileStatus, { cls: string; label: string }> = {
@@ -88,6 +88,16 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
     }
   }
 
+  async function chooseLlm(): Promise<LlmProfile | null> {
+    const s = await api.getSettings();
+    const profiles = (s.llmProfiles ?? []).filter((p) => p.base && p.model);
+    if (profiles.length === 0) {
+      setError('请先在设置里添加模型，并填好端点和模型名');
+      return null;
+    }
+    return pickLlmDialog(profiles, s.defaultLlmId || profiles[0].id);
+  }
+
   async function doParseAll() {
     const doneCount =
       detail?.files.filter((f) => (f.status === 'done' || f.status === 'needs_review') && f.txCount > 0).length ?? 0;
@@ -102,18 +112,27 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       );
       if (!ok) return;
     }
+    let picked: LlmProfile | null;
+    try {
+      picked = await chooseLlm();
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    if (!picked) return;
     setBusy(true);
     setNotice(undefined);
     try {
-      const r = await api.parseTask(taskId);
+      const r = await api.parseTask(taskId, picked.id);
       const pausedNote = r.paused ? '。当前已暂停，点继续后开始' : '';
+      const modelNote = `用「${picked.name}」`;
       setNotice(
         r.queued > 0
           ? r.resumed && r.resumed === r.queued
-            ? `已继续 ${r.queued} 份，从上次停下的页接着读${pausedNote}`
+            ? `${modelNote}已继续 ${r.queued} 份，从上次停下的页接着读${pausedNote}`
             : r.resumed
-              ? `已加入解析队列 ${r.queued} 份，其中 ${r.resumed} 份从上次停下的页继续${pausedNote}`
-              : `已加入解析队列 ${r.queued} 份${r.added ? `（新扫描 ${r.added} 份）` : ''}${
+              ? `${modelNote}已加入解析队列 ${r.queued} 份，其中 ${r.resumed} 份从上次停下的页继续${pausedNote}`
+              : `${modelNote}已加入解析队列 ${r.queued} 份${r.added ? `（新扫描 ${r.added} 份）` : ''}${
                   pausedNote || '，完成后交易会按新规则替换'
                 }`
           : '没有可解析的文件（可能都在解析中）',
@@ -123,6 +142,39 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function doParsePages(f: BankFile) {
+    setNotice(undefined);
+    let info;
+    try {
+      info = await api.filePages(f.id);
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    const pages = await pickPagesDialog(info);
+    if (!pages) return;
+    let picked: LlmProfile | null;
+    try {
+      picked = await chooseLlm();
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    if (!picked) return;
+    try {
+      const r = await api.parseFile(f.id, false, picked.id, pages);
+      const list = pages.join('、');
+      setNotice(
+        !r.queued
+          ? '该文件正在解析中'
+          : `用「${picked.name}」重读第 ${list} 页，读完只替换这些页，其它页保持原记录${r.paused ? '。当前已暂停，点继续后开始' : ''}`,
+      );
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
     }
   }
 
@@ -141,15 +193,24 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
       });
       if (!ok) return;
     }
+    let picked: LlmProfile | null;
+    try {
+      picked = await chooseLlm();
+    } catch (e) {
+      setError((e as Error).message);
+      return;
+    }
+    if (!picked) return;
     setNotice(undefined);
     try {
-      const r = await api.parseFile(f.id, fresh);
+      const r = await api.parseFile(f.id, fresh, picked.id);
+      const modelNote = `用「${picked.name}」`;
       setNotice(
         !r.queued
           ? '该文件正在解析中'
           : r.resumed
-            ? `「${f.relPath}」从第 ${r.resumePage ?? f.resumePage} 页继续${r.paused ? '。当前已暂停，点继续后开始' : ''}`
-            : `「${f.relPath}」已加入解析队列${r.paused ? '。当前已暂停，点继续后开始' : '，完成后会替换原交易'}`,
+            ? `${modelNote}「${f.relPath}」从第 ${r.resumePage ?? f.resumePage} 页继续${r.paused ? '。当前已暂停，点继续后开始' : ''}`
+            : `${modelNote}「${f.relPath}」已加入解析队列${r.paused ? '。当前已暂停，点继续后开始' : '，完成后会替换原交易'}`,
       );
       await load();
     } catch (e) {
@@ -429,6 +490,9 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                               ? { label: '重新解析', onClick: () => void doParse(f) }
                               : { label: '开始解析', disabled: f.status === 'parsing', onClick: () => void doParse(f) },
                           ]),
+                      ...(f.txCount > 0 && f.status !== 'parsing'
+                        ? [{ label: '解析指定页', onClick: () => void doParsePages(f) }]
+                        : []),
                       { label: '删除登记', danger: true, onClick: () => void doRemove(f) },
                     ]}
                   >
@@ -453,7 +517,7 @@ export function TaskPage({ taskId, onBackToProject, onBrowseFile, onChangedTasks
                       <span className="list-row-col-updated">{formatDateTime(f.updatedAt)}</span>
                     </div>
                   </ListRow>
-                  {f.status === 'error' && f.error ? (
+                  {f.error ? (
                     <div className="file-error" title={f.error}>
                       {f.error}
                     </div>

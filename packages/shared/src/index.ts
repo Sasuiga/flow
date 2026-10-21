@@ -121,12 +121,26 @@ export interface FsMkdirInput {
   name: string;
 }
 
+/** 一套可选用的视觉模型。地址、模型名、鉴权可以各自不同。 */
+export interface LlmProfile {
+  id: string;
+  /** 给人看的名字，例如「局域网 Qwen」 */
+  name: string;
+  base: string;
+  model: string;
+  extraHeader: string;
+}
+
 export interface Settings {
-  /** OpenAI 兼容基址，如 http://127.0.0.1:8005/v1 或 https://your-llm.example.com/v1 */
+  /** OpenAI 兼容基址，如 http://127.0.0.1:8005/v1 或 https://your-llm.example.com/v1。与默认模型保持一致。 */
   llmBase: string;
   llmModel: string;
   /** 可选：LLM 自定义请求头，如 "Authorization: Bearer sk-xxx" 或 "X-Api-Key: abc" */
   llmExtraHeader: string;
+  /** 设置里登记的模型。解析前从这里选。 */
+  llmProfiles: LlmProfile[];
+  /** 自动解析和分类用的模型 */
+  defaultLlmId: string;
   /** OCR 服务基址，如 http://127.0.0.1:8008 或 https://your-ocr.example.com */
   ocrBase: string;
   /** 可选：OCR 自定义请求头 */
@@ -626,6 +640,8 @@ export const DEFAULT_SETTINGS: Settings = {
   llmBase: 'http://127.0.0.1:8005/v1',
   llmModel: '',
   llmExtraHeader: '',
+  llmProfiles: [],
+  defaultLlmId: '',
   ocrBase: 'http://127.0.0.1:8008',
   ocrExtraHeader: '',
   llmConcurrency: 2,

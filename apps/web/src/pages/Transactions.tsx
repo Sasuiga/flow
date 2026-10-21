@@ -4,6 +4,7 @@ import { Table } from 'antd';
 import { BankFile, TRANSIT_FUND_USE_LABEL, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { Modal } from '../components/Modal';
+import { pickLlmDialog, pickPagesDialog } from '../lib/confirm';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 type TxPageProps = {
   /** 右上角当前任务。交易页只看这一份资料 */
@@ -34,6 +35,26 @@ type TxDraft = {
 /** 流水印刷顺序。用来比较哪一条待复核离当前更近。 */
 function stmtKey(r: { page: number; lineNo: number; id: number }): number {
   return r.page * 1_000_000_000 + r.lineNo * 1_000_000 + r.id;
+}
+
+/** 把对照表里这一行滚到左栏可视区域的正中，方便直接读。 */
+function centerCompareRow(id: number): boolean {
+  const row = document.querySelector(`.tx-compare-left tr[data-row-key="${id}"]`) as HTMLElement | null;
+  if (!row) return false;
+  const scroller = row.closest('.tx-compare-left-scroll') as HTMLElement | null;
+  if (!scroller) {
+    row.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  }
+  const rowRect = row.getBoundingClientRect();
+  const box = scroller.getBoundingClientRect();
+  const head = scroller.querySelector('.ant-table-thead') as HTMLElement | null;
+  const headH = head ? head.getBoundingClientRect().height : 0;
+  const visibleTop = box.top + headH;
+  const visibleMid = visibleTop + (box.height - headH) / 2;
+  const delta = rowRect.top + rowRect.height / 2 - visibleMid;
+  if (Math.abs(delta) > 1) scroller.scrollTop += delta;
+  return true;
 }
 
 function balanceRecalcText(b: { selfGap: string | null; nextGap: string | null; hasNext: boolean }): string {
@@ -111,6 +132,11 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [localName, setLocalName] = useState('');
   const [focus, setFocus] = useState<{ id: number; fileId: number; fileName: string; page: number } | null>(null);
   const [jumpBusy, setJumpBusy] = useState(false);
+  const [jumpSeq, setJumpSeq] = useState(0);
+  /** 大于 0 时，PDF 用 view=Fit 把该页整页放进右栏中间。每次点击加一，同一页也会重新定位。 */
+  const [pdfFit, setPdfFit] = useState(0);
+  const [pageGaps, setPageGaps] = useState<number[]>([]);
+  const [pageBusy, setPageBusy] = useState(false);
   const jumpToId = useRef<number | null>(null);
   const localUrlRef = useRef<string | null>(null);
   const queryBeforeRef = useRef<TxQuery | null>(null);
@@ -394,6 +420,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     queryBeforeRef.current = query;
     setCompareFile(file);
     setComparePick(false);
+    setPdfFit(0);
     setFocus(null);
     setSelectedIds([]);
     setBulkCat('');
@@ -410,6 +437,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     setComparePick(false);
     if (file.id === compareFile?.id) return;
     setCompareFile(file);
+    setPdfFit(0);
     setFocus(null);
     setSelectedIds([]);
     setBulkCat('');
@@ -427,6 +455,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     queryBeforeRef.current = null;
     setCompareFile(null);
     setComparePick(false);
+    setPdfFit(0);
     setFocus(null);
     setSelectedIds([]);
     setBulkCat('');
@@ -440,7 +469,12 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     else setQuery((q) => ({ ...q, fileId: undefined, page: 1 }));
   }
 
-  /** 从当前这笔往后，跳到最近一条待复核。后面没有就回到第一条。 */
+  function focusTx(r: TxRow) {
+    setPdfFit(0);
+    setFocus({ id: r.id, fileId: r.fileId, fileName: r.fileName, page: r.page || 1 });
+  }
+
+  /** 从当前这笔往后，跳到下一条待复核。后面没有就回到第一条。行和 PDF 页都放到中间。 */
   async function jumpToNearestReview() {
     if (!compareFile || query.taskId == null || jumpBusy) return;
     setJumpBusy(true);
@@ -469,29 +503,30 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
         (focus ? data?.rows.find((r) => r.id === focus.id) : undefined) ?? data?.rows[0];
       const anchorKey = anchor ? stmtKey(anchor) : -1;
       const target = reviews.find((r) => stmtKey(r) > anchorKey) ?? reviews[0];
-      if (anchor && target.id === anchor.id) {
-        setNotice('已经在这条待复核上');
-        setFocus({ id: target.id, fileId: target.fileId, fileName: target.fileName, page: target.page || 1 });
-        return;
-      }
       const pageSize = query.pageSize ?? 50;
-      let listPage = 1;
-      for (let page = 1; page <= 50; page++) {
-        const r = await api.listTransactions({
-          taskId: query.taskId,
-          fileId: compareFile.id,
-          sort: 'stmt',
-          page,
-          pageSize: chunk,
-        });
-        const idx = r.rows.findIndex((row) => row.id === target.id);
-        if (idx >= 0) {
-          listPage = Math.floor(((page - 1) * chunk + idx) / pageSize) + 1;
-          break;
+      const onScreen = anchor && target.id === anchor.id && data?.rows.some((row) => row.id === target.id);
+      let listPage = query.page ?? 1;
+      if (!onScreen) {
+        for (let page = 1; page <= 50; page++) {
+          const r = await api.listTransactions({
+            taskId: query.taskId,
+            fileId: compareFile.id,
+            sort: 'stmt',
+            page,
+            pageSize: chunk,
+          });
+          const idx = r.rows.findIndex((row) => row.id === target.id);
+          if (idx >= 0) {
+            listPage = Math.floor(((page - 1) * chunk + idx) / pageSize) + 1;
+            break;
+          }
+          if (page * chunk >= r.total || r.rows.length === 0) break;
         }
-        if (page * chunk >= r.total || r.rows.length === 0) break;
       }
+      if (anchor && target.id === anchor.id) setNotice('已经在这条待复核上');
       jumpToId.current = target.id;
+      setJumpSeq((n) => n + 1);
+      setPdfFit((n) => n + 1);
       setFocus({ id: target.id, fileId: target.fileId, fileName: target.fileName, page: target.page || 1 });
       setQuery((q) => (q.page === listPage ? q : { ...q, page: listPage }));
     } catch (e) {
@@ -526,17 +561,104 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   }, [compare, editingId]);
 
   useEffect(() => {
-    if (!compare || jumpToId.current == null) return;
     const id = jumpToId.current;
-    const row = document.querySelector(`.tx-compare-left tr[data-row-key="${id}"]`);
-    if (!row) return;
-    row.scrollIntoView({ block: 'center', inline: 'nearest' });
-    jumpToId.current = null;
-  }, [compare, data, query.page]);
+    if (!compare || id == null) return;
+    let cancelled = false;
+    const timers: number[] = [];
+    const run = (tries: number) => {
+      if (cancelled || jumpToId.current !== id) return;
+      if (!centerCompareRow(id)) {
+        if (tries < 8) timers.push(window.setTimeout(() => run(tries + 1), 50));
+        return;
+      }
+      // 分页换页后表格还会再排一次，隔一会儿再校正，避免行停在顶部。
+      timers.push(window.setTimeout(() => {
+        if (!cancelled && jumpToId.current === id) centerCompareRow(id);
+      }, 80));
+      timers.push(window.setTimeout(() => {
+        if (!cancelled && jumpToId.current === id) {
+          centerCompareRow(id);
+          jumpToId.current = null;
+        }
+      }, 240));
+    };
+    timers.push(window.setTimeout(() => run(0), 0));
+    return () => {
+      cancelled = true;
+      for (const t of timers) window.clearTimeout(t);
+    };
+  }, [compare, data, loading, query.page, jumpSeq]);
+
+  useEffect(() => {
+    if (!compareFile || localUrl) {
+      setPageGaps([]);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .filePages(compareFile.id)
+      .then((info) => {
+        if (!cancelled) setPageGaps(info.gaps);
+      })
+      .catch(() => {
+        if (!cancelled) setPageGaps([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [compareFile, localUrl]);
+
+  async function doReparsePages() {
+    if (!compareFile || taskId == null || localUrl) return;
+    setPageBusy(true);
+    setNotice(undefined);
+    setError(undefined);
+    try {
+      const info = await api.filePages(compareFile.id);
+      setPageGaps(info.gaps);
+      const suggest = focus?.fileId === compareFile.id ? focus.page : undefined;
+      const pages = await pickPagesDialog({ ...info, suggest });
+      if (!pages) return;
+      const settings = await api.getSettings();
+      const profiles = (settings.llmProfiles ?? []).filter((p) => p.base && p.model);
+      if (profiles.length === 0) {
+        setError('请先在设置里添加模型，并填好端点和模型名');
+        return;
+      }
+      const picked = await pickLlmDialog(profiles, settings.defaultLlmId || profiles[0].id);
+      if (!picked) return;
+      const r = await api.parseFile(compareFile.id, false, picked.id, pages);
+      const list = pages.join('、');
+      setNotice(
+        !r.queued
+          ? '该文件正在解析中'
+          : `用「${picked.name}」重读第 ${list} 页，读完只替换这些页，其它页保持原记录`,
+      );
+      if (!r.queued) return;
+      const fileId = compareFile.id;
+      for (let i = 0; i < 90; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const detail = await api.getTask(taskId);
+        const file = detail.files.find((item) => item.id === fileId);
+        if (!file || file.status !== 'parsing') {
+          setReloadKey((k) => k + 1);
+          const again = await api.filePages(fileId).catch(() => null);
+          if (again) setPageGaps(again.gaps);
+          setNotice(file?.error ? file.error : `第 ${list} 页已补进原记录`);
+          return;
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPageBusy(false);
+    }
+  }
 
   const pdfPage = focus?.page && focus.page > 0 ? focus.page : 1;
   const pdfBase = localUrl ?? (compareFile ? `/api/files/${compareFile.id}/pdf` : '');
-  const pdfSrc = pdfBase ? `${pdfBase}#page=${pdfPage}` : '';
+  // view=Fit：Chrome 内置阅读器把这一页整页放进右栏，不用再拖 PDF 滑块。
+  const pdfSrc = pdfBase ? `${pdfBase}#page=${pdfPage}${pdfFit ? '&view=Fit' : ''}` : '';
 
   return (
     <div className={compare ? 'tx-compare-screen' : 'tx-page'}>
@@ -551,10 +673,11 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             <button
               type="button"
               className="secondary-button"
-              disabled={jumpBusy}
-              onClick={() => void jumpToNearestReview()}
+              disabled={pageBusy || !!localUrl || compareFile.status === 'parsing'}
+              title={localUrl ? '本地 PDF 不能补解析，请对照任务里的原文件' : '只重读选中的页，结果替换进原记录'}
+              onClick={() => void doReparsePages()}
             >
-              最近待复核
+              {pageGaps.length > 0 ? `补解析漏页（${pageGaps.length}）` : '解析指定页'}
             </button>
             <button type="button" className="secondary-button" onClick={() => void openCompare()}>
               切换
@@ -793,7 +916,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                   onClick: (e) => {
                     const el = e.target as HTMLElement;
                     if (el.closest('.ant-table-selection-column, button, a, input, label')) return;
-                    setFocus({ id: r.id, fileId: r.fileId, fileName: r.fileName, page: r.page || 1 });
+                    focusTx(r);
                     setExpandedKeys((keys) => (keys.includes(r.id) ? keys.filter((id) => id !== r.id) : [...keys, r.id]));
                   },
                 })
@@ -828,7 +951,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                       title="修改这笔交易"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setFocus({ id: record.id, fileId: record.fileId, fileName: record.fileName, page: record.page || 1 });
+                        focusTx(record);
                         openEdit(record);
                       }}
                     />
@@ -934,8 +1057,26 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
-              title: '状态',
-              width: 112,
+              title: compare ? (
+                <span className="tx-status-head">
+                  <button
+                    type="button"
+                    className="secondary-button tx-next-review"
+                    disabled={jumpBusy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void jumpToNearestReview();
+                    }}
+                  >
+                    下一个待复核
+                  </button>
+                  <span>状态</span>
+                </span>
+              ) : (
+                '状态'
+              ),
+              key: 'status',
+              width: compare ? 148 : 112,
               render: (_: unknown, r: TxRow) => {
                 const chip = STATUS_CHIP[r.status] ?? { cls: 'chip-muted', label: r.status };
                 return (
@@ -945,7 +1086,11 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                 );
               },
             },
-          ] as { title?: unknown }[]).filter((c) => !compare || ['日期', '金额', '余额', '状态'].includes(String(c.title))) as never}
+          ] as { title?: unknown; key?: unknown }[]).filter((c) => {
+            if (!compare) return true;
+            const id = String(c.key ?? c.title);
+            return id === '日期' || id === '金额' || id === '余额' || id === 'status';
+          }) as never}
         />
       </div>
       </div>
@@ -1055,7 +1200,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       ) : null}
       {compare ? (
         <div className="tx-compare-right">
-          {pdfSrc ? <iframe key={pdfSrc} className="tx-pdf-frame" title="流水 PDF" src={pdfSrc} /> : null}
+          {pdfSrc ? <iframe key={`${pdfSrc}:${pdfFit}`} className="tx-pdf-frame" title="流水 PDF" src={pdfSrc} /> : null}
         </div>
       ) : null}
       </div>

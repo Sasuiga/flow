@@ -617,6 +617,145 @@ select.input {
   width: min(400px, calc(100vw - 36px));
 }
 
+.modal-dialog-llm {
+  width: min(520px, calc(100vw - 36px));
+}
+
+.llm-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 0;
+  max-height: min(360px, 50vh);
+  overflow: auto;
+}
+
+.llm-pick-item {
+  display: flex;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-panel);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.llm-pick-item > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.llm-pick-item.on {
+  border-color: var(--ui-primary-border);
+  background: var(--ui-primary-soft);
+}
+
+.llm-pick-name {
+  font-weight: 600;
+  color: var(--ui-text);
+}
+
+.llm-pick-meta {
+  color: var(--ui-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.llm-pick-tag {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ui-primary);
+}
+
+.page-gap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 10px;
+  max-height: min(240px, 40vh);
+  overflow: auto;
+}
+
+.page-gap-lead,
+.page-gap-warn {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ui-muted);
+}
+
+.page-gap-warn {
+  color: var(--ui-warning);
+}
+
+.page-gap-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.page-gap-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+
+.page-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+  max-height: min(280px, 42vh);
+  overflow: auto;
+}
+
+button.page-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 4.8em;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 8px;
+  background: var(--ui-panel);
+  color: var(--ui-text);
+  text-align: left;
+}
+
+button.page-chip.on {
+  border-color: var(--ui-primary-border);
+  background: var(--ui-primary-soft);
+}
+
+button.page-chip span:last-child {
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+
+button.page-chip.thin span:last-child {
+  color: var(--ui-warning);
+}
+
+.page-pick-input {
+  width: 100%;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--ui-panel);
+  color: var(--ui-text);
+}
+
 .modal-head {
   flex: 0 0 auto;
 }
@@ -1457,7 +1596,38 @@ select.input {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 10px 4px;
+  padding: 0 10px 4px;
+}
+
+.tx-compare-left .tx-table {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tx-compare-left .ant-table-thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  vertical-align: bottom;
+  background: #fff;
+}
+
+.tx-status-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.tx-next-review {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .tx-compare-left .ant-table-tbody > tr.tx-compare-row,
@@ -3110,6 +3280,22 @@ button.tx-status:hover {
     width: 100%;
     min-height: 46px;
     font-size: 15px;
+  }
+
+  .modal-dialog-llm {
+    width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+  }
+
+  .modal-dialog-llm .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .modal-dialog-llm .modal-actions > button {
+    width: 100%;
+    min-height: 46px;
   }
 
   /* ---- 交易对照里的「修改交易」弹层 ---- */

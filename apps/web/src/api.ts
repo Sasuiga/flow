@@ -81,6 +81,8 @@ export interface RefreshResult {
   resumed?: number;
 }
 
+export type FilePages = { total: number; gaps: number[]; byPage: { page: number; n: number }[] };
+
 export const api = {
   /* ---------- 设置 / AI 探测（M1） ---------- */
   getSettings: () => j<Settings>('/api/settings'),
@@ -153,15 +155,16 @@ export const api = {
   recentTasks: () => j<TaskBrief[]>('/api/tasks/recent'),
 
   /* ---------- 解析 / 交易浏览器（M2） ---------- */
-  parseFile: (id: number, fresh = false) =>
+  filePages: (id: number) => j<FilePages>(`/api/files/${id}/pages`),
+  parseFile: (id: number, fresh = false, llmId?: string, pages?: number[]) =>
     j<{ ok: boolean; queued: boolean; paused?: boolean; resumed?: boolean; resumePage?: number }>(
       `/api/files/${id}/parse`,
-      { method: 'POST', body: JSON.stringify({ fresh }) },
+      { method: 'POST', body: JSON.stringify({ fresh, llmId, pages }) },
     ),
-  parseTask: (taskId: number) =>
+  parseTask: (taskId: number, llmId?: string) =>
     j<{ ok: boolean; added: number; queued: number; paused?: boolean; resumed?: number }>(
       `/api/files/task/${taskId}/parse`,
-      { method: 'POST' },
+      { method: 'POST', body: JSON.stringify({ llmId }) },
     ),
   pauseTaskParse: (taskId: number) =>
     j<{ ok: boolean; files: number; paused: boolean }>(`/api/files/task/${taskId}/pause`, { method: 'POST' }),
