@@ -298,6 +298,54 @@ function cleanStr(v: unknown): string | undefined {
   return s;
 }
 
+function asciiDigits(s: string): string {
+  return s.replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xff10 + 0x30));
+}
+
+function calendarDate(y: number, m: number, d: number): string | undefined {
+  if (y < 1970 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) return undefined;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return undefined;
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/**
+ * 银行流水上常见的日期收成 YYYY-MM-DD。
+ * 认 20260109、2026/1/9、2026.01.09、2026年1月9日，以及已经是 YYYY-MM-DD 的。
+ * 认不出或不是合法日期就原样留下，交给后面标「日期格式异常」。
+ */
+export function normalizeBankDate(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  let s = asciiDigits(raw).trim().split(/[T\s]/)[0] ?? '';
+  s = s.replace(/日$/, '');
+  let y: number;
+  let m: number;
+  let d: number;
+  const split = s.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})$/);
+  const compact = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const hit = split ?? compact;
+  if (!hit) return undefined;
+  y = Number(hit[1]);
+  m = Number(hit[2]);
+  d = Number(hit[3]);
+  return calendarDate(y, m, d);
+}
+
+function cleanDate(v: unknown): string | undefined {
+  const s = cleanStr(v);
+  if (!s) return undefined;
+  return normalizeBankDate(s) ?? s;
+}
+
+/** 去掉「日期格式异常」段。其它复核原因保留。 */
+function stripDateNote(note: string): string {
+  return note
+    .split('；')
+    .map((part) => part.trim())
+    .filter((part) => part && !part.startsWith('日期格式异常'))
+    .join('；');
+}
+
 /** 去掉旧的余额断裂提示，保留日期/置信度等其它复核原因 */
 export function stripBalanceNote(note: string): string {
   return note
@@ -423,9 +471,10 @@ function normalizeTxs(raw: unknown, totalPages: number): NormTx[] {
     const dirOk = isOut || isIn;
     const direction: 'in' | 'out' = isOut ? 'out' : 'in';
     const review: string[] = [];
-    const date = cleanStr(t.date);
-    if (!date) review.push('日期缺失');
-    else if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) review.push(`日期格式异常(${date})`);
+    const dateRaw = cleanStr(t.date);
+    const date = dateRaw ? normalizeBankDate(dateRaw) : undefined;
+    if (!dateRaw) review.push('日期缺失');
+    else if (!date) review.push(`日期格式异常(${dateRaw})`);
     const confidence = numOrNull(t.confidence) ?? 1;
     if (confidence < 0.8) review.push(`低置信(${confidence.toFixed(2)})`);
     if (lineNo === 0) review.push('行号缺失');
@@ -486,8 +535,8 @@ export async function structureBatch(
     bank: cleanStr(j.bank),
     accountNo: cleanStr(j.account_no),
     accountName: cleanStr(j.account_name),
-    periodStart: cleanStr(j.period_start),
-    periodEnd: cleanStr(j.period_end),
+    periodStart: cleanDate(j.period_start),
+    periodEnd: cleanDate(j.period_end),
     txs,
   };
 }
@@ -526,8 +575,8 @@ export async function structurePageImage(
     bank: cleanStr(j.bank),
     accountNo: cleanStr(j.account_no),
     accountName: cleanStr(j.account_name),
-    periodStart: cleanStr(j.period_start),
-    periodEnd: cleanStr(j.period_end),
+    periodStart: cleanDate(j.period_start),
+    periodEnd: cleanDate(j.period_end),
     txs: normalizeTxs(rows, totalPages),
   };
 }
@@ -1216,6 +1265,48 @@ export class ParseQueue {
 }
 
 export const parseQueue = new ParseQueue();
+
+/**
+ * 已经入库的日期若能认出，收成 YYYY-MM-DD，并去掉因此打上的「日期格式异常」。
+ * 余额断裂、摘要缺失这些别的原因留着。
+ */
+export function repairStoredDates(): number {
+  const rows = db
+    .prepare(
+      `SELECT id, file_id, date, review_note, status FROM transactions
+       WHERE (date IS NOT NULL AND date != '' AND date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+          OR IFNULL(review_note, '') LIKE '%日期格式异常%'`,
+    )
+    .all() as Array<{ id: number; file_id: number; date: string | null; review_note: string | null; status: string }>;
+  const upd = db.prepare('UPDATE transactions SET date = ?, review_note = ?, status = ? WHERE id = ?');
+  const touched = new Set<number>();
+  let n = 0;
+  const apply = db.transaction(() => {
+    for (const r of rows) {
+      const normalized = r.date ? normalizeBankDate(r.date) : undefined;
+      const nextDate = normalized ?? r.date;
+      const iso = !!nextDate && normalizeBankDate(nextDate) === nextDate;
+      const nextNote = iso ? stripDateNote(r.review_note ?? '') : (r.review_note ?? '');
+      const dateChanged = nextDate !== r.date;
+      const noteChanged = nextNote !== (r.review_note ?? '');
+      if (!dateChanged && !noteChanged) continue;
+      let status = r.status;
+      if (!nextNote && status === 'needs_review') status = 'ok';
+      upd.run(nextDate, nextNote || null, status, r.id);
+      touched.add(r.file_id);
+      n++;
+    }
+    const fileUp = db.prepare(
+      `UPDATE files SET status = 'done', updated_at = ?
+       WHERE id = ? AND status = 'needs_review'
+         AND NOT EXISTS (SELECT 1 FROM transactions WHERE file_id = files.id AND status = 'needs_review')`,
+    );
+    for (const fileId of touched) fileUp.run(now(), fileId);
+  });
+  apply();
+  if (n > 0) console.log(`[parse] 已把 ${n} 笔日期整理成 YYYY-MM-DD`);
+  return n;
+}
 
 /** 启动自愈：被打断的 parsing 复位 scanned，并自动开跑未解析的文件（M2 验收：放 PDF 自动出交易表） */
 export function autoParsePending(): void {

@@ -31,6 +31,11 @@ type TxDraft = {
   category: string;
 };
 
+/** 流水印刷顺序。用来比较哪一条待复核离当前更近。 */
+function stmtKey(r: { page: number; lineNo: number; id: number }): number {
+  return r.page * 1_000_000_000 + r.lineNo * 1_000_000 + r.id;
+}
+
 function balanceRecalcText(b: { selfGap: string | null; nextGap: string | null; hasNext: boolean }): string {
   const self =
     b.selfGap == null ? '本笔缺少余额，未测算' : b.selfGap === '' ? '本笔与上一笔衔接' : `本笔${b.selfGap}`;
@@ -104,6 +109,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [localName, setLocalName] = useState('');
   const [focus, setFocus] = useState<{ id: number; fileId: number; fileName: string; page: number } | null>(null);
+  const [jumpBusy, setJumpBusy] = useState(false);
+  const jumpToId = useRef<number | null>(null);
   const localUrlRef = useRef<string | null>(null);
   const queryBeforeRef = useRef<TxQuery | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -414,6 +421,67 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     else setQuery((q) => ({ ...q, fileId: undefined, page: 1 }));
   }
 
+  /** 从当前这笔往后，跳到最近一条待复核。后面没有就回到第一条。 */
+  async function jumpToNearestReview() {
+    if (!compareFile || query.taskId == null || jumpBusy) return;
+    setJumpBusy(true);
+    setNotice(undefined);
+    setError(undefined);
+    try {
+      const reviews: TxRow[] = [];
+      const chunk = 200;
+      for (let page = 1; page <= 50; page++) {
+        const r = await api.listTransactions({
+          taskId: query.taskId,
+          fileId: compareFile.id,
+          status: 'needs_review',
+          sort: 'stmt',
+          page,
+          pageSize: chunk,
+        });
+        reviews.push(...r.rows);
+        if (reviews.length >= r.total || r.rows.length === 0) break;
+      }
+      if (reviews.length === 0) {
+        setNotice('这份流水没有待复核');
+        return;
+      }
+      const anchor =
+        (focus ? data?.rows.find((r) => r.id === focus.id) : undefined) ?? data?.rows[0];
+      const anchorKey = anchor ? stmtKey(anchor) : -1;
+      const target = reviews.find((r) => stmtKey(r) > anchorKey) ?? reviews[0];
+      if (anchor && target.id === anchor.id) {
+        setNotice('已经在这条待复核上');
+        setFocus({ id: target.id, fileId: target.fileId, fileName: target.fileName, page: target.page || 1 });
+        return;
+      }
+      const pageSize = query.pageSize ?? 50;
+      let listPage = 1;
+      for (let page = 1; page <= 50; page++) {
+        const r = await api.listTransactions({
+          taskId: query.taskId,
+          fileId: compareFile.id,
+          sort: 'stmt',
+          page,
+          pageSize: chunk,
+        });
+        const idx = r.rows.findIndex((row) => row.id === target.id);
+        if (idx >= 0) {
+          listPage = Math.floor(((page - 1) * chunk + idx) / pageSize) + 1;
+          break;
+        }
+        if (page * chunk >= r.total || r.rows.length === 0) break;
+      }
+      jumpToId.current = target.id;
+      setFocus({ id: target.id, fileId: target.fileId, fileName: target.fileName, page: target.page || 1 });
+      setQuery((q) => (q.page === listPage ? q : { ...q, page: listPage }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setJumpBusy(false);
+    }
+  }
+
   function openLocalPdf(file: File | undefined) {
     if (!file) return;
     if (localUrlRef.current) URL.revokeObjectURL(localUrlRef.current);
@@ -438,6 +506,15 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compare, editingId]);
 
+  useEffect(() => {
+    if (!compare || jumpToId.current == null) return;
+    const id = jumpToId.current;
+    const row = document.querySelector(`.tx-compare-left tr[data-row-key="${id}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center', inline: 'nearest' });
+    jumpToId.current = null;
+  }, [compare, data, query.page]);
+
   const pdfPage = focus?.page && focus.page > 0 ? focus.page : 1;
   const pdfBase = localUrl ?? (compareFile ? `/api/files/${compareFile.id}/pdf` : '');
   const pdfSrc = pdfBase ? `${pdfBase}#page=${pdfPage}` : '';
@@ -452,6 +529,14 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             {localName ? ` · ${localName}` : ''}
           </span>
           <div className="tx-compare-bar-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={jumpBusy}
+              onClick={() => void jumpToNearestReview()}
+            >
+              最近待复核
+            </button>
             <button type="button" className="secondary-button" onClick={() => void openCompare()}>
               切换
             </button>
@@ -716,9 +801,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               ? {
                   rowExpandable: () => true,
                   expandedRowKeys: expandedKeys,
-                  onExpand: (expanded: boolean, r: TxRow) => {
-                    setExpandedKeys((keys) => (expanded ? [...keys, r.id] : keys.filter((id) => id !== r.id)));
-                  },
                   expandIcon: ({ record }: { expanded: boolean; onExpand: (r: TxRow, e: MouseEvent<HTMLElement>) => void; record: TxRow }) => (
                     <button
                       type="button"
@@ -840,7 +922,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                 return (
                   <span className={`chip tx-status ${chip.cls}`} title={r.reviewNote || chip.label}>
                     {chip.label}
-                    {r.confidence < 0.99 ? ` ${(r.confidence * 100).toFixed(0)}%` : ''}
                   </span>
                 );
               },

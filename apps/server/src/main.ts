@@ -11,7 +11,7 @@ import { transactionsRouter, filesRouter, taskListRouter } from './tx.js';
 import { categoriesRouter, categorizeTasksRouter } from './categorize.js';
 import { watchRouter } from './watchlist.js';
 import { initWatchers } from './watch.js';
-import { autoParsePending, parseQueue } from './parse.js';
+import { autoParsePending, parseQueue, repairStoredDates } from './parse.js';
 import { Settings } from '@flow/shared';
 
 const app = express();
@@ -90,6 +90,7 @@ app.listen(port, () => {
   console.log(`[flow] http://localhost:${port}  (web dist: ${existsSync(dist ?? '') ? '已加载' : '未构建，dev 模式请用 vite :5173'})`);
   // M2：任务目录监听 + 解析队列（新 PDF 自动登记并解析；启动时补扫+自愈）
   void initWatchers().then(() => {
+    repairStoredDates();
     autoParsePending(); // 复位被打断的 parsing + 开跑未解析文件
     parseQueue.start();
     console.log('[flow] 任务目录监听与解析队列已启动');
