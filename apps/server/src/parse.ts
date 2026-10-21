@@ -618,6 +618,26 @@ export async function structureBatch(
   };
 }
 
+/**
+ * 模型偶尔会把提示里的「上一页最后几笔」原样抄回来当成这一页的交易。
+ * raw 与提示行完全相同的丢掉；空白页尤其容易触发。
+ */
+export function dropEchoedRows(rows: unknown[], prevTail?: string): unknown[] {
+  const tail = new Set(
+    (prevTail ?? '')
+      .split('\n')
+      .map((s) => s.trim().replace(/\s+/g, ' '))
+      .filter(Boolean),
+  );
+  if (tail.size === 0) return rows;
+  return rows.filter((row) => {
+    if (!row || typeof row !== 'object') return true;
+    const raw = (row as Record<string, unknown>).raw;
+    if (typeof raw !== 'string') return true;
+    return !tail.has(raw.trim().replace(/\s+/g, ' '));
+  });
+}
+
 /** 视觉模型读一页图，直接给出结构化交易。页码和行号按本页顺序写死，不信模型自己编号。 */
 export async function structurePageImage(
   settings: { llmBase: string; llmModel: string; llmExtraHeader: string },
@@ -640,7 +660,8 @@ export async function structurePageImage(
     { maxTokens: 12000, images: [image.jpeg], signal },
   );
   const j = extractJson<Record<string, unknown>>(content);
-  const rows = modelTransactions(j);
+  const modelRows = modelTransactions(j);
+  const rows = dropEchoedRows(modelRows, prevTail);
   rows.forEach((row, i) => {
     if (row && typeof row === 'object') {
       const t = row as Record<string, unknown>;
@@ -650,7 +671,10 @@ export async function structurePageImage(
   });
   // 归一化会把页码夹到 1..总页数。这一页就是 image.page，写回去，避免新行落到别的页、本页被删空。
   const txs = normalizeTxs(rows, totalPages).map((t) => ({ ...t, page: image.page }));
-  console.log(`[parse] 第 ${image.page}/${totalPages} 页模型 ${rows.length} 行，可用 ${txs.length} 笔`);
+  const echoed = modelRows.length - rows.length;
+  console.log(
+    `[parse] 第 ${image.page}/${totalPages} 页模型 ${modelRows.length} 行${echoed > 0 ? `，其中 ${echoed} 行是上一页提示重复` : ''}，可用 ${txs.length} 笔`,
+  );
   return {
     bank: cleanStr(j.bank),
     accountNo: cleanStr(j.account_no),
