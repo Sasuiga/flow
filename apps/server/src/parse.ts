@@ -19,7 +19,7 @@ import { scanPdfFiles } from './fsutil.js';
 
 const require = createRequire(import.meta.url);
 
-/* ---------- pdfjs（惰性加载；Node 端用 legacy 构建 + fs 直读 standard_fonts/cmaps） ---------- */
+/* ---------- pdfjs（惰性加载；Node 端用 legacy 构建 + fs 直读 standard_fonts/cmaps/wasm） ---------- */
 
 let pdfjsPromise: Promise<typeof import('pdfjs-dist/legacy/build/pdf.mjs')> | null = null;
 
@@ -51,12 +51,16 @@ function loadPdfjs(): Promise<typeof import('pdfjs-dist/legacy/build/pdf.mjs')> 
   return pdfjsPromise;
 }
 
-/** pdfjs-dist 资源目录（standard_fonts/cmaps 所在包目录；dev=仓库 pnpm 树，zip=包内 node_modules） */
-function pdfjsResourceUrls(): { standardFontDataUrl: string; cMapUrl: string } {
+/**
+ * pdfjs-dist 资源目录（standard_fonts/cmaps/wasm 所在包目录；dev=仓库 pnpm 树，zip=包内 node_modules）。
+ * wasm 不能省：JPEG2000（JPX）/JBIG2 扫描页要靠它解码，缺了整页会渲染成白纸。
+ */
+function pdfjsResourceUrls(): { standardFontDataUrl: string; cMapUrl: string; wasmUrl: string } {
   const pkgDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
   return {
     standardFontDataUrl: pathToFileURL(path.join(pkgDir, 'standard_fonts') + '/').href,
     cMapUrl: pathToFileURL(path.join(pkgDir, 'cmaps') + '/').href,
+    wasmUrl: pathToFileURL(path.join(pkgDir, 'wasm') + '/').href,
   };
 }
 
@@ -130,6 +134,7 @@ export async function extractTextLines(
     cMapData: true,
     standardFontDataUrl: urls.standardFontDataUrl,
     cMapUrl: urls.cMapUrl,
+    wasmUrl: urls.wasmUrl,
     BinaryDataFactory: FSDataFactory,
   } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
   const doc = await task.promise;
@@ -186,6 +191,7 @@ async function openPdf(pdfPath: string) {
     cMapData: true,
     standardFontDataUrl: urls.standardFontDataUrl,
     cMapUrl: urls.cMapUrl,
+    wasmUrl: urls.wasmUrl,
     BinaryDataFactory: FSDataFactory,
   } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
   return task;
