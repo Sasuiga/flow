@@ -14,7 +14,7 @@
      └─ 报告期任务（流水分析）← .flow/task.json；PDF 放任务目录，报告输出任务目录 flow-output/
 ```
 
-## 开发运行（微服/本机 Linux）
+## 开发运行（本机 / 服务器）
 
 ```bash
 pnpm install
@@ -24,10 +24,10 @@ cd apps/server && node dist/main.js   # http://localhost:4120
 ```
 
 - 数据目录：`FLOW_DATA_DIR`（默认 `apps/server/data/flow.db`，SQLite 单文件）
-- 目录浏览器根：`FLOW_DOC_ROOT`（未设=用户主目录）；微服部署时设为网盘工作目录
+- 目录浏览器根：`FLOW_DOC_ROOT`（未设=用户主目录）；部署时可指向数据所在目录
 - 端口：`PORT`（默认 4120）
 
-## 发布 Windows 绿色包（v2 部署微服前）
+## 发布 Windows 绿色包
 
 ```bash
 node scripts/build-win-zip.mjs <版本号>   # 产物在 /tmp/flowpkg/flow-win-x64-<版本号>.zip

@@ -15,7 +15,7 @@
 - 前端：**React 18 + 纯手写 CSS 设计系统**（`styles.css` 1.26 万行 + 分域 css），图标 **lucide-react**，状态 **zustand**。**不用 AntD**。
 - 持久化：**`registry.json`（应用数据目录，项目/任务索引）+ 目录内 `.avalon/project.md`、`.avalon/task.md`（YAML frontmatter 元数据）**。
 - 桌面/宿主差异收拢在一个 `CoreHostBridge` 接口（窗口、事件推送、目录选择等）。
-- Web 版已验证懒猫微服部署（`tools/avalon-lzcapp/`），目录选择默认打开「网盘/Avalon」工作目录。
+- Web 版已验证服务器部署，目录选择默认打开工作区目录。
 
 ## 1. UI / 视觉设计系统
 
@@ -85,9 +85,9 @@
 ### 3.1 目录选择（本次需求重点）
 
 - 桌面：原生对话框（`registry:pick-directory` → `dialog.showOpenDialog`）。
-- Web（懒猫/自部署）：**目录浏览器弹窗**（`showPathPickerModal`，`pick`/`browse` 两种模式）：
+- Web（自部署）：**目录浏览器弹窗**（`showPathPickerModal`，`pick`/`browse` 两种模式）：
   - 元素：标题 → 路径输入框（monospace，Enter=进入，Esc=取消）→ 工具条「↑ 上级」「＋ 新建文件夹」（输入名→「创建并进入」）→ 子目录列表（📁 行：名称+完整路径，点击进入；browse 模式额外列文件 📄）→ 状态行 → 底部「取消 / 打开此目录」。
-  - 起始目录优先级：调用方指定 > 服务端 `fs:doc-root`（`AVALON_WORKSPACE_DIR` 工作目录 > `AVALON_DOC_ROOT` 网盘根）> 未探测到则提示"请手动输入绝对路径"。
+  - 起始目录优先级：调用方指定 > 服务端 `fs:doc-root`（`AVALON_WORKSPACE_DIR` 工作目录 > `AVALON_DOC_ROOT` 文档根目录）> 未探测到则提示"请手动输入绝对路径"。
   - 服务端三通道（`fsHandlers.ts`，Node 侧干活、前端只渲染）：
     - `fs:doc-root` → `{ docRoot?, workspaceDir? }`
     - `fs:list(path, includeFiles?)` → `{ path, parent, entries[{name,path}], files? }`（中文 localeCompare 排序，错误友好化：ENOENT=目录不存在/已被删除、EACCES=权限不足、ENOTDIR=不是目录）
@@ -121,12 +121,12 @@
 ### C. 本地电脑交互（借鉴 Avalon Web 目录浏览器）
 
 1. 服务端新增 fs 通道（对齐 Avalon 语义与错误文案）：
-   - `GET /api/fs/root` → `{ root? }`（`FLOW_DOC_ROOT` 环境变量；默认=用户主目录；自部署/微服可配）
+   - `GET /api/fs/root` → `{ root? }`（`FLOW_DOC_ROOT` 环境变量；默认=用户主目录；自部署可配）
    - `GET /api/fs/list?path=`、`POST /api/fs/mkdir`
 2. 前端 **DirectoryPicker 组件**（React 化 `showPathPickerModal`：路径输入+↑上级+新建文件夹+子目录列表+「打开此目录」，pick/browse 双模式）。
 3. 新建项目对话框：名称 + 「选择文件夹」按钮（只读输入框+预览"将创建/使用：xxx"，仿 Avalon `task-create-location`）。
-4. 项目条动作「打开文件夹」：Windows 本地 = `child_process` `explorer`；Web（懒猫 v2）= browse 模式目录浏览器。
-5. 文件上传拖拽（微服场景）留到 v2，与 PLAN 一致。
+4. 项目条动作「打开文件夹」：Windows 本地 = `child_process` `explorer`；Web（服务端部署）= browse 模式目录浏览器。
+5. 文件上传拖拽（服务端场景）留到 v2，与 PLAN 一致。
 
 ### D. 落地拆分（M1.5，已完成 2026-10-14，待用户验收）
 

@@ -1,7 +1,7 @@
 # flow — 银行流水分析核查工作台 · 开发计划（v1）
 
 > 版本：v1.2（2026-10-14 修订：业务实体三级结构 客户→融资项目→报告期任务；关联方挂客户层；v1 重心为「PDF→LLM 可处理数据」解析管线；Avalon UI 对齐，见 `docs/avalon-reference.md`）
-> v1.1（2026-10-14：两级结构 + 主体延后 v1.1）；v1.0 草案（2026-10-13，头脑风暴产出）；讨论过程见 `brainstorm-notes.md`；设备/服务实测依据见 `Device-Guides/facts.md`（事实 2/4/18）
+> v1.1（2026-10-14：两级结构 + 主体延后 v1.1）；v1.0 草案（2026-10-13，头脑风暴产出）；讨论过程见 `brainstorm-notes.md`
 > 决策编号 D1~D14 对应 brainstorm-notes.md 决策日志。
 
 ---
@@ -11,11 +11,11 @@
 **产品**：`flow` = 上市公司银行流水（资金流）分析与核查工作台。
 把"PDF 银行流水 → 手工录 Excel → 人工判断" 变成 "PDF 丢进项目文件夹 → 自动结构化 + 逐笔分类 + 规则预警 → 交互式复核 → 导出 Excel/报告"。
 
-**用户与形态**：第一版单人、Windows 本机 WebUI（双击启动，浏览器使用）；架构为可移植 web 服务，v2 原样部署到懒猫微服（LPK，参照 avalon-web 模式）获得 24h/远程。
+**用户与形态**：第一版单人、Windows 本机 WebUI（双击启动，浏览器使用）；架构为可移植 web 服务，需要 24h/远程访问时可直接部署到自有服务器。
 
-**AI 依赖（全部局域网，数据不出域）**：
-- LLM：`http://192.168.1.17:8005/v1`（Qwen3.8-27B，OpenAI 兼容，多模态，模型 ID 以 `/v1/models` 为准）
-- OCR：`http://192.168.1.17:8008/ocr/raw`（PP-OCRv6，返回文本+置信度+坐标框）
+**AI 依赖（全部本地/内网，数据不出域）**：
+- LLM：可配置的 OpenAI 兼容端点（如 `http://<LLM_HOST>:8005/v1`，多模态，模型 ID 以 `/v1/models` 为准）
+- OCR：可配置的 OCR 服务（如 `http://<OCR_HOST>:8008/ocr/raw`，返回文本+置信度+坐标框）
 
 **MVP（v1）交付**：客户/融资项目/报告期任务三级管理（目录选择/创建，对齐 Avalon 交互）→ 双通道解析（文字层 PDF / 扫描件 OCR）→ 结构化交易 + 余额连续性校验 + 人工修正队列 → 逐笔分类（LLM 批量 + 人工改判）→ 汇总 + 规则引擎（R3/R4/R5 信号规则）→ Excel + Markdown 报告导出（写入任务目录 `flow-output/`）。
 **v1 重心：PDF 流水 → 高效、准确、LLM 可处理的数据**；主体/关联方（客户层基础清单 + 报告期差异）作为风险排查子项，v1.1 按需设计（§9）。
@@ -52,7 +52,7 @@
 | P1（v1.1） | 跨期/跨项目对比 | 同账户/同分类 两期间对比（数据模型 v1 已预留） |
 | P1（v1.1） | LLM 探索模式 | 对一般户"自动发现异常模式"建议（针对规则未总结痛点，D7） |
 | P1（v1.1） | 行内原文高亮 | 交易→PDF 页内定位高亮 |
-| P2（v2） | 微服 LPK 部署 | 同一代码 → 24h/远程（heiyu.space），文件夹=微服网盘 |
+| P2（v2） | 服务器/容器部署（可选） | 同一代码 → 24h/远程访问，文件夹=服务器数据目录 |
 | P2（v2） | 多用户/权限、docx 报告、模板市场 | 内网推广时再做 |
 
 ### 2.3 明确不做（v1）
@@ -67,7 +67,7 @@
 
 | 层 | 选择 | 理由 |
 |---|---|---|
-| 语言/运行时 | Node.js 22 + TypeScript | v2 部署微服 LPK 的成熟先例（node:22 镜像 + start.sh，avalon-web 已验证）；单一运行时好打包 |
+| 语言/运行时 | Node.js 22 + TypeScript | 单一运行时好打包；服务端可直接跑在 Node 22 环境 |
 | 后端 | Express + better-sqlite3 + chokidar + exceljs | 单人单机场景零运维；SQLite 单文件随项目走，备份=复制 |
 | 前端 | React 18 + Vite + Ant Design 5 + TanStack Query | 表格密集的中文化工作台，AntD 组件成熟稳定 |
 | PDF | pdfjs-dist（Node 端取文字层+坐标）+ @napi-rs/canvas（渲染 PNG 给 OCR） | 文字层通道完全免费且最准；@napi-rs 有 Windows 预编译 |
@@ -75,15 +75,15 @@
 | 存储 | SQLite（全局一个 `data/flow.db`） | 项目/文件/交易/主体/规则/命中/设置 全表见 §4 |
 | 构建/工程 | pnpm workspace monorepo：`apps/server`、`apps/web`、`packages/shared` | 类型共享；产物打成单目录 dist |
 
-**M1 前置 spike（半天）**：在 Windows 上验证 `@napi-rs/canvas` 与 `better-sqlite3` 预编译可用、pdfjs-dist Node 端文字坐标质量、vLLM/OCR 从 Windows 局域网连通。任一不过 → 备选：Python 侧车（PyMuPDF）或换 mutool 渲染。
+**M1 前置 spike（半天）**：在 Windows 上验证 `@napi-rs/canvas` 与 `better-sqlite3` 预编译可用、pdfjs-dist Node 端文字坐标质量、LLM/OCR 端点从 Windows 可连通。任一不过 → 备选：Python 侧车（PyMuPDF）或换 mutool 渲染。
 
 ### 3.4 开发与交付工作流（D15）
 
 ```
-微服（Linux 容器, /home/savigny/Project/flow）   ←  开发 + 测试主环境
-        │ git push（私有仓，PAT）
+Linux 开发环境（本机或容器）   ←  开发 + 测试主环境
+        │ git push
         ▼
-GitHub 私有仓 flow：源码 + PLAN.md + brainstorm-notes.md（交接/存档介质）
+GitHub 仓库 flow：源码 + PLAN.md + brainstorm-notes.md（交接/存档介质）
         │ 每个里程碑打 tag + 附 Release asset
         ▼
 flow-v0.X-win-x64.zip = 便携 Node(免装) + 服务端 bundle + 前端静态
@@ -93,7 +93,7 @@ flow-v0.X-win-x64.zip = 便携 Node(免装) + 服务端 bundle + 前端静态
 Windows 笔记本：双击 start.bat → 浏览器 localhost → 试用反馈（录屏/文字均可）
 ```
 
-- 笔记本需与算力舱同局域网（直连 192.168.1.17:8005/8008，设置页有连通性自检）
+- 笔记本需能访问配置好的 AI 端点（设置页有连通性自检）
 - 仓库里附 `USER-GUIDE.md`（用户手册）；zip 内附简版启动说明
 - Windows 专有验证（双击启动、路径/编码）= 每个里程碑用户侧冒烟项（§6 已含）
 
@@ -105,11 +105,11 @@ Windows 笔记本：双击 start.bat → 浏览器 localhost → 试用反馈（
         │
         ├─ 通道A 文字层: pdfjs 逐页取文本项(含 x/y/w/h) ─┐
         │                                                   ├─→ 行重建(y 聚类, x 排序)
-        └─ 通道B 扫描件: 页渲染 PNG(250dpi) → POST :8008/ocr/raw ─┘
+        └─ 通道B 扫描件: 页渲染 PNG(250dpi) → POST <OCR_HOST>/ocr/raw ─┘
                      (PP-OCR 返回 text+confidence+box, 用 box 做行重建)
                             │
                             ▼
-              LLM 结构化 (:8005, 每 N 页一批, 严格 JSON schema)
+              LLM 结构化 (每 N 页一批, 严格 JSON schema)
               { bank?, account_no?, account_name?, period_start/end?,
                 transactions:[{date, summary, amount, direction, balance,
                                counterparty, counterparty_account, channel,
@@ -128,7 +128,7 @@ Windows 笔记本：双击 start.bat → 浏览器 localhost → 试用反馈（
 - **行重建算法**：按 y 中心聚类（容差=行高 50%）成行；行内按 x 排序拼格；输出"布局保真文本"（每行一格）喂 LLM。文字层 PDF 与 OCR 输出统一成该中间格式，LLM 侧无差别。
 - **余额连续性**是最强质检杠杆：一笔错 → 后续全错位，能精确定位错行，进修正队列时自动定位到该行。
 - **银行版式记忆**：同一银行首份 PDF 的 LLM 提取结果（列映射）缓存，后续同银行 PDF 用模板加速+降成本（v1.1 优化项，v1 留钩子）。
-- **模型 ID 漂移防护**（facts 4 已踩过坑）：启动探测 `/v1/models`，设置页可改；OCR 探测 `/health`。
+- **模型 ID 漂移防护**（已踩过坑）：启动探测 `/v1/models`，设置页可改；OCR 探测 `/health`。
 - **并发**：解析任务队列（默认 2 并发 LLM 调用），OCR batch=8；进度实时推前端（SSE/轮询）。
 
 ### 3.3 前端页面（v1）
@@ -141,7 +141,7 @@ Windows 笔记本：双击 start.bat → 浏览器 localhost → 试用反馈（
 | 修正队列 | 待修正行（校验失败/低置信）：左=原始页文本或页图，右=可编辑字段，保存后自动复算 |
 | 规则 | 内置规则开关与参数（阈值等；v1 为 R3/R4/R5）；命中明细与"确认/误报"标记 |
 | 主体与关联方（v1.1） | 客户基础清单 + 报告期任务差异（新增/排除）登记表单 + CSV 导入；对手方未匹配名单（一键补登记） |
-| 设置 | AI 端点（LLM/OCR，默认 192.168.1.17:8005/8008）、模型名、并发数、分类集管理 |
+| 设置 | AI 端点（LLM/OCR，可配置）、模型名、并发数、分类集管理 |
 
 ---
 
@@ -219,7 +219,7 @@ LLM 辅助规则（摘要语义异常等）与探索模式 → v1.1（§2.2 P1�
 
 | 里程碑 | 内容 | 出口标准（验收） |
 |---|---|---|
-| **M1**（0.5d） | spike：Windows 原生模块/渲染/局域网端点验证；monorepo 脚手架；设置页+端点探测 | Windows 上跑通"取一页文字层文本 + 调通 OCR/LLM" | ✅ 已完成 |
+| **M1**（0.5d） | spike：Windows 原生模块/渲染/AI 端点验证；monorepo 脚手架；设置页+端点探测 | Windows 上跑通"取一页文字层文本 + 调通 OCR/LLM" | ✅ 已完成 |
 | **M1.5**（0.5d） | Avalon UI 对齐（设计令牌+顶栏 AppChrome+ListRow+弹窗/按钮，见 `docs/avalon-reference.md`）；目录选择器（fs API + DirectoryPicker）；客户/项目/任务三级创建流程 + `.flow/client.json`/`.flow/project.json`/`.flow/task.json` 标记文件 | 双击启动后 Avalon 式完成"建客户（选择/创建目录）→ 建融资项目（创建目录）→ 建报告期任务（创建目录）"，目录与标记自动落盘，无需手输路径 |
 | **M2**（1d） | 三级数据模型+文件监听（任务目录）；文字层通道→行重建→LLM 结构化→交易入库+交易浏览器 | 真实文字层 PDF 放入任务目录，自动出结构化交易表（抽样 50 行准确率≥90%） | ✅ 已完成（解析改走视觉通道：转图→读表） |
 | **M3**（1d） | 扫描件通道（渲染+OCR+行重建）；余额连续性校验；修正队列 | 扫描件 PDF 端到端；故意改错一行能被校验定位；修正后可复算 | ✅ 已完成（`ReviewQueue`） |
@@ -247,7 +247,7 @@ LLM 辅助规则（摘要语义异常等）与探索模式 → v1.1（§2.2 P1�
 | 银行版式多样，LLM 结构化误差 | 高 | 高 | 三级兜底：字段置信度→余额校验定位→人工修正队列；"银行版式记忆"缓存（v1.1） |
 | 密集流水页 OCR 质量 | 中 | 高 | 250dpi+PP-OCR medium；低置信块打标进队列；疑难页可手动 Qwen-VL 兜底 |
 | Windows 原生模块（canvas/sqlite） | 中 | 中 | M1 spike 提前炸；备选 Python 侧车/mutool |
-| vLLM 模型 ID/服务切换漂移（facts 4） | 中 | 中 | 启动探测+设置页可改+任务失败明确提示"AI 端点不可达" |
+| 模型 ID/服务切换漂移 | 中 | 中 | 启动探测+设置页可改+任务失败明确提示"AI 端点不可达" |
 | 年度多账户数据量（数万行） | 低 | 低 | SQLite 无压力；LLM 批量 30 笔/批；解析异步+进度 |
 | 用户反馈节奏（模式 A） | 中 | 中 | 每里程碑演示+录屏 1 分钟说明；手册 1 页 |
 
@@ -256,7 +256,7 @@ LLM 辅助规则（摘要语义异常等）与探索模式 → v1.1（§2.2 P1�
 2. 跨期/跨项目对比分析（同账户/分类两期间 diff 视图）
 3. LLM 探索模式：一般户异常模式自动发现 → 一键转规则
 4. 银行版式记忆（同银行加速）+ PDF 页内高亮
-5. 微服 LPK 部署（24h/远程，heiyu.space；文件夹=微服网盘）
+5. 服务器/容器部署（可选，24h/远程；文件夹=服务器数据目录）
 6. 多用户/权限、docx 报告、规则模板库
 
 ## 10. 开放问题（不阻塞开发）
