@@ -124,7 +124,7 @@ export function dirExists(dir: string): boolean {
   }
 }
 
-/** 目录浏览器根：FLOW_DOC_ROOT（微服部署=网盘工作目录）> 用户主目录 */
+/** 目录浏览器根：FLOW_DOC_ROOT（部署时=数据工作目录）> 用户主目录 */
 export function fsRoot(): string {
   return process.env.FLOW_DOC_ROOT?.trim() || os.homedir();
 }

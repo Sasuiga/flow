@@ -122,12 +122,12 @@ export interface FsMkdirInput {
 }
 
 export interface Settings {
-  /** vLLM OpenAI 兼容基址，如 http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space/v1 */
+  /** OpenAI 兼容基址，如 http://127.0.0.1:8005/v1 或 https://your-llm.example.com/v1 */
   llmBase: string;
   llmModel: string;
   /** 可选：LLM 自定义请求头，如 "Authorization: Bearer sk-xxx" 或 "X-Api-Key: abc" */
   llmExtraHeader: string;
-  /** PP-OCRv6 基址，如 http://192.168.1.17:8008 或 https://xxx.heiyu.space */
+  /** OCR 服务基址，如 http://127.0.0.1:8008 或 https://your-ocr.example.com */
   ocrBase: string;
   /** 可选：OCR 自定义请求头 */
   ocrExtraHeader: string;
@@ -623,10 +623,10 @@ export interface CategoryFocus {
 /* ---------- 默认配置 ---------- */
 
 export const DEFAULT_SETTINGS: Settings = {
-  llmBase: 'http://192.168.1.17:8005/v1',
-  llmModel: 'qwen-3.8-27b-uncensored',
+  llmBase: 'http://127.0.0.1:8005/v1',
+  llmModel: '',
   llmExtraHeader: '',
-  ocrBase: 'http://192.168.1.17:8008',
+  ocrBase: 'http://127.0.0.1:8008',
   ocrExtraHeader: '',
   llmConcurrency: 2,
   autoCategorize: true,

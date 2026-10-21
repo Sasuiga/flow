@@ -66,7 +66,7 @@ export async function fetchLLMModels(base: string, extraHeader?: string): Promis
 
 /**
  * OpenAI 兼容 chat/completions（解析管线用，M2）。
- * 流式接收（vLLM 非流式会缓冲到生成完才回包，Jetson 上超过 undici 300s headers 超时）。
+ * 流式接收（非流式会缓冲到生成完才回包，推理较慢时可能超过 undici 300s headers 超时）。
  * 返回 content 文本（reasoning 不计入）；调用方自行解析 JSON（extractJson 容错）。
  */
 export async function llmChat(

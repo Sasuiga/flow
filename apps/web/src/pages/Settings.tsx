@@ -247,7 +247,7 @@ export default function SettingsPage() {
                       name="llmBase"
                       rules={[{ required: true, message: '请输入 LLM 端点' }]}
                     >
-                      <Input placeholder="http://192.168.1.17:8005/v1 或 https://xxx.heiyu.space:8005/v1" spellCheck={false} />
+                      <Input placeholder="http://127.0.0.1:8005/v1 或 https://your-llm.example.com/v1" spellCheck={false} />
                     </Form.Item>
                     <Form.Item
                       label="模型名"
@@ -259,7 +259,7 @@ export default function SettingsPage() {
                         <AutoComplete
                           style={{ flex: 1 }}
                           options={modelOptions}
-                          placeholder="qwen-3.8-27b-uncensored"
+                          placeholder="例如 qwen3-vl"
                           allowClear
                         />
                         <Button
@@ -310,7 +310,7 @@ export default function SettingsPage() {
                       rules={[{ required: true, message: '请输入 OCR 端点' }]}
                       extra="填到根地址即可，无需 /health、/ocr 等路径后缀"
                     >
-                      <Input placeholder="http://192.168.1.17:8008 或 https://xxx.heiyu.space:18008" spellCheck={false} />
+                      <Input placeholder="http://127.0.0.1:8008 或 https://your-ocr.example.com" spellCheck={false} />
                     </Form.Item>
                     <Form.Item
                       label="自定义请求头（可选）"
@@ -412,7 +412,7 @@ export default function SettingsPage() {
           }}
         >
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            提示：模型服务可能被懒猫平台切换，若 LLM 测试提示模型不在列表，请按提示里的可用模型名更新后保存。
+            提示：模型服务可能由平台切换，若 LLM 测试提示模型不在列表，请按提示里的可用模型名更新后保存。
           </Typography.Text>
           <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => save()}>
             保存设置
