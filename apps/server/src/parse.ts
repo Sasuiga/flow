@@ -813,34 +813,21 @@ function tailBeforePage(fileId: number, page: number): string | undefined {
   return rows.map((t) => t.raw_text || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n');
 }
 
-/**
- * 只换掉这次确实读出交易的页。某一页归一化后是 0 笔，就留下原来的行。
- * 其它页不动。关注、规则命中随被换掉的行一起去掉。
- */
-function replaceFilePages(
-  fileId: number,
-  pages: number[],
-  txs: NormTx[],
-): { insertedIds: number[]; replacedPages: number[]; keptPages: number[] } {
-  const byPage = new Map<number, NormTx[]>();
-  for (const p of pages) byPage.set(p, []);
-  for (const t of txs) byPage.get(t.page)?.push(t);
-  const replacedPages = pages.filter((p) => (byPage.get(p)?.length ?? 0) > 0);
-  const keptPages = pages.filter((p) => (byPage.get(p)?.length ?? 0) === 0);
-  if (replacedPages.length === 0) return { insertedIds: [], replacedPages, keptPages };
-  const placeholders = replacedPages.map(() => '?').join(',');
+/** 只删掉这些页的交易再写入新结果（含空结果）。其它页不动。关注、规则命中随这些行一起去掉。 */
+function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { insertedIds: number[] } {
+  const placeholders = pages.map(() => '?').join(',');
   const tx = db.transaction(() => {
     db.prepare(
       `DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ? AND page IN (${placeholders}))`,
-    ).run(fileId, ...replacedPages);
-    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...replacedPages);
+    ).run(fileId, ...pages);
+    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...pages);
     const ins = db.prepare(
       `INSERT INTO transactions(file_id, page, line_no, date, summary, amount, direction, balance,
         counterparty, counterparty_account, channel, confidence, review_note, raw_text, status)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     const insertedIds: number[] = [];
-    const inOrder = replacedPages.flatMap((p) => byPage.get(p) ?? []).sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
+    const inOrder = [...txs].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
     for (const t of inOrder) {
       const raw = t.raw?.trim();
       const status = t.review ? 'needs_review' : 'ok';
@@ -865,7 +852,7 @@ function replaceFilePages(
     }
     return insertedIds;
   });
-  return { insertedIds: tx(), replacedPages, keptPages };
+  return { insertedIds: tx() };
 }
 
 export async function filePageMap(fileId: number): Promise<
@@ -1060,42 +1047,25 @@ export async function parseFileTextLayer(
   if (pageMode) {
     prog.set('vision', 'done', `已重读第 ${wanted.join('、')} 页`);
     prog.set('structure', 'done', `这几页读出 ${all.length} 笔`);
-    const emptyReads = pageReads.filter((p) => p.n === 0);
+    const emptyPages = pageReads.filter((p) => p.n === 0).map((p) => p.page);
     await hold('save', '已暂停，继续后把这几页补进原记录');
-    const pagesToWrite = wanted.filter((p) => !emptyReads.some((e) => e.page === p));
-    prog.set('save', 'run', pagesToWrite.length > 0 ? `写回第 ${pagesToWrite.join('、')} 页` : '这几页没有新交易，原记录保留');
+    prog.set('save', 'run', `按最新结果写回第 ${wanted.join('、')} 页`);
     const replaced = replaceFilePages(fileId, wanted, all);
     console.log(
-      `[parse] file#${fileId} 指定页写回：换上 ${replaced.replacedPages.join('、') || '无'}（${replaced.insertedIds.length} 笔），保留 ${replaced.keptPages.join('、') || '无'}`,
+      `[parse] file#${fileId} 指定页写回：第 ${wanted.join('、')} 页共 ${replaced.insertedIds.length} 笔` +
+        (emptyPages.length ? `（第 ${emptyPages.join('、')} 页为空）` : ''),
     );
-    const keptNote = replaced.keptPages
-      .map((p) => {
-        const read = pageReads.find((r) => r.page === p);
-        return read && read.raw > 0
-          ? `第 ${p} 页读到 ${read.raw} 行，但没有能入库的金额，原记录还留着`
-          : `第 ${p} 页没有读出交易，原记录还留着`;
-      })
-      .join('。');
-    const wroteNote =
-      replaced.replacedPages.length > 0
-        ? `第 ${replaced.replacedPages.join('、')} 页已换上 ${replaced.insertedIds.length} 笔`
-        : '';
-    const warn = keptNote ? [keptNote, wroteNote].filter(Boolean).join('。') : null;
-    let reviewCount: number;
-    if (replaced.replacedPages.length > 0) {
-      prog.set('balance', 'run', '按整份流水重核前后页的余额');
-      reviewCount = recomputeFileBalanceReviews(fileId).reviewCount;
-      prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
-    } else {
-      reviewCount = Number(
-        (db.prepare(`SELECT COUNT(*) AS n FROM transactions WHERE file_id = ? AND status = 'needs_review'`).get(fileId) as { n: number }).n,
-      );
-      prog.set('balance', 'skip', '没有换上新交易，余额沿用原记录');
-    }
+    prog.set('balance', 'run', '按整份流水重核前后页的余额');
+    const reviewCount = recomputeFileBalanceReviews(fileId).reviewCount;
+    prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
     const txCount = Number((db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n);
+    const saveDetail =
+      emptyPages.length > 0
+        ? `第 ${emptyPages.join('、')} 页按空结果覆盖；第 ${wanted.join('、')} 页已写回，这份现有 ${txCount} 笔`
+        : `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`;
     const patch: Record<string, unknown> = {
       tx_count: txCount,
-      error: warn,
+      error: null,
       status: reviewCount > 0 ? 'needs_review' : 'done',
       progress: null,
     };
@@ -1104,7 +1074,7 @@ export async function parseFileTextLayer(
     if (!file.account_name && meta.accountName) patch.account_name = meta.accountName;
     if (!file.period_start && meta.periodStart) patch.period_start = meta.periodStart;
     if (!file.period_end && meta.periodEnd) patch.period_end = meta.periodEnd;
-    prog.set('save', 'done', warn ?? `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`);
+    prog.set('save', 'done', saveDetail);
     setFile(fileId, patch);
     if (replaced.insertedIds.length > 0 && getSettings().autoCategorize) {
       try {
@@ -1126,16 +1096,15 @@ export async function parseFileTextLayer(
           },
         });
         prog.set('categorize', 'done', r.classified > 0 ? `已分类 ${r.classified} 笔` : '无需分类');
-        setFile(fileId, { error: warn });
+        setFile(fileId, { error: null });
       } catch (e) {
         if (isStopped(e)) {
           prog.set('categorize', 'skip', '已终止');
-          setFile(fileId, { progress: null, error: warn });
+          setFile(fileId, { progress: null, error: null });
           return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
         }
         prog.set('categorize', 'fail', (e as Error).message);
-        const fail = (e as Error).message;
-        setFile(fileId, { error: warn ? `${warn}。分类失败：${fail}` : `这几页已补进原记录，LLM 分类失败：${fail}` });
+        setFile(fileId, { error: `这几页已补进原记录，LLM 分类失败：${(e as Error).message}` });
       }
     } else {
       prog.set('categorize', 'skip', replaced.insertedIds.length > 0 ? '自动分类已关闭' : '这几页没有新交易');
