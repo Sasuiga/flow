@@ -303,6 +303,9 @@ export interface TxQuery {
   to?: string;
   counterparty?: string;
   q?: string;
+  /** 金额区间，含边界，单位元 */
+  amountMin?: number;
+  amountMax?: number;
   status?: TxStatus;
   /** 分类过滤：'__none__' = 未分类 */
   category?: string;

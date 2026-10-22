@@ -1,6 +1,6 @@
-import { Bookmark, Columns2, FilterX, Inbox, Plus, SlidersHorizontal } from 'lucide-react';
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
-import { Table } from 'antd';
+import { Bookmark, Columns2, Filter, FilterX, Inbox, Plus, SlidersHorizontal } from 'lucide-react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { Popover, Table } from 'antd';
 import { BankFile, specialFundUseByQuery, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { Modal } from '../components/Modal';
@@ -122,6 +122,123 @@ function fileLabel(relPath: string): string {
   return parts[parts.length - 1] || relPath;
 }
 
+/** 对照页表头筛选：点列名弹出筛选条件，直接改列表查询 */
+function HeaderFilter({
+  label,
+  active,
+  children,
+}: {
+  label: string;
+  active: boolean;
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger="click"
+      placement="bottomLeft"
+      content={<div className="tx-hf">{children(() => setOpen(false))}</div>}
+    >
+      <button
+        type="button"
+        className={`tx-hf-btn${active ? ' active' : ''}`}
+        title={`按${label}筛选`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span>{label}</span>
+        <Filter size={12} />
+      </button>
+    </Popover>
+  );
+}
+
+/** 文本筛选：输入后按回车或点应用，避免每敲一个字就查一次 */
+function TextFilter({
+  value,
+  placeholder,
+  onApply,
+  onClear,
+}: {
+  value?: string;
+  placeholder: string;
+  onApply: (value: string | undefined) => void;
+  onClear: () => void;
+}) {
+  const [text, setText] = useState(value ?? '');
+  useEffect(() => setText(value ?? ''), [value]);
+  const apply = () => onApply(text.trim() || undefined);
+  return (
+    <>
+      <input
+        autoFocus
+        className="input"
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') apply();
+        }}
+      />
+      <div className="tx-hf-actions">
+        <button type="button" className="secondary-button" onClick={onClear}>
+          清除
+        </button>
+        <button type="button" className="primary-button" onClick={apply}>
+          应用
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** 金额区间，单位元；两边都可留空 */
+function AmountFilter({
+  min,
+  max,
+  onApply,
+  onClear,
+}: {
+  min?: number;
+  max?: number;
+  onApply: (min: number | undefined, max: number | undefined) => void;
+  onClear: () => void;
+}) {
+  const [lo, setLo] = useState(min == null ? '' : String(min));
+  const [hi, setHi] = useState(max == null ? '' : String(max));
+  useEffect(() => {
+    setLo(min == null ? '' : String(min));
+    setHi(max == null ? '' : String(max));
+  }, [min, max]);
+  const num = (v: string) => {
+    const t = v.trim();
+    if (!t) return undefined;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  return (
+    <>
+      <div className="tx-hf-row">
+        <span>从</span>
+        <input className="input" type="number" step="0.01" value={lo} onChange={(e) => setLo(e.target.value)} placeholder="最低金额" />
+      </div>
+      <div className="tx-hf-row">
+        <span>到</span>
+        <input className="input" type="number" step="0.01" value={hi} onChange={(e) => setHi(e.target.value)} placeholder="最高金额" />
+      </div>
+      <div className="tx-hf-actions">
+        <button type="button" className="secondary-button" onClick={onClear}>
+          清除
+        </button>
+        <button type="button" className="primary-button" onClick={() => onApply(num(lo), num(hi))}>
+          应用
+        </button>
+      </div>
+    </>
+  );
+}
+
 /**
  * 交易浏览器：只看当前任务。
  * 银行和募投列出该任务的全部；账户随银行、募投收窄。
@@ -180,6 +297,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const compare = compareFile != null;
   /** 当前聚焦的行必须在本页表格里，补一笔才有明确的插入位置 */
   const focusedRow = focus ? data?.rows.find((r) => r.id === focus.id) : undefined;
+  /** 对照页表头筛选用的分类选项：配置集 + 当前数据里实际出现的 */
+  const categoryFilterValues = [...new Set([...catSet, ...(options?.categories ?? [])])];
 
   useEffect(() => {
     if (query.taskId == null) {
@@ -197,6 +316,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       to: query.to,
       counterparty: query.counterparty,
       q: query.q,
+      amountMin: query.amountMin,
+      amountMax: query.amountMax,
       status: query.status,
       category: query.category,
       fundUse: query.fundUse,
@@ -254,6 +375,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     query.to,
     query.counterparty,
     query.q,
+    query.amountMin,
+    query.amountMax,
     query.status,
     query.category,
     query.fundUse,
@@ -1203,14 +1326,65 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               ),
             },
             {
-              title: '日期',
+              title: compare ? (
+                <HeaderFilter label="日期" active={!!(query.from || query.to)}>
+                  {() => (
+                    <>
+                      <div className="tx-hf-row">
+                        <span>从</span>
+                        <input
+                          className="input"
+                          type="date"
+                          value={query.from ?? ''}
+                          onChange={(e) => patch({ from: e.target.value || undefined })}
+                        />
+                      </div>
+                      <div className="tx-hf-row">
+                        <span>到</span>
+                        <input
+                          className="input"
+                          type="date"
+                          value={query.to ?? ''}
+                          onChange={(e) => patch({ to: e.target.value || undefined })}
+                        />
+                      </div>
+                      <div className="tx-hf-actions">
+                        <button type="button" className="secondary-button" onClick={() => patch({ from: undefined, to: undefined })}>
+                          清除
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '日期'
+              ),
               key: 'date',
               dataIndex: 'date',
               width: 96,
               render: (v: unknown) => <span className="tx-date">{typeof v === 'string' ? v : '—'}</span>,
             },
             {
-              title: '金额',
+              title: compare ? (
+                <HeaderFilter
+                  label="金额"
+                  active={query.amountMin != null || query.amountMax != null}
+                >
+                  {(close) => (
+                    <AmountFilter
+                      min={query.amountMin}
+                      max={query.amountMax}
+                      onApply={(min, max) => {
+                        patch({ amountMin: min, amountMax: max });
+                        close();
+                      }}
+                      onClear={() => patch({ amountMin: undefined, amountMax: undefined })}
+                    />
+                  )}
+                </HeaderFilter>
+              ) : (
+                '金额'
+              ),
               key: 'amount',
               dataIndex: 'amount',
               width: 150,
@@ -1230,14 +1404,46 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => <span className="tx-balance">{fmtAmount(typeof v === 'number' ? v : undefined, unit)}</span>,
             },
             {
-              title: '摘要',
+              title: compare ? (
+                <HeaderFilter label="摘要" active={!!query.q}>
+                  {(close) => (
+                    <TextFilter
+                      value={query.q}
+                      placeholder="摘要包含…"
+                      onApply={(v) => {
+                        patch({ q: v });
+                        close();
+                      }}
+                      onClear={() => patch({ q: undefined })}
+                    />
+                  )}
+                </HeaderFilter>
+              ) : (
+                '摘要'
+              ),
               key: 'summary',
               dataIndex: 'summary',
               ellipsis: true,
               render: (v: unknown, r: TxRow) => <span title={r.rawText ?? (typeof v === 'string' ? v : undefined)}>{typeof v === 'string' ? v : '—'}</span>,
             },
             {
-              title: '对手方',
+              title: compare ? (
+                <HeaderFilter label="对手方" active={!!query.counterparty}>
+                  {(close) => (
+                    <TextFilter
+                      value={query.counterparty}
+                      placeholder="对手方包含…"
+                      onApply={(v) => {
+                        patch({ counterparty: v });
+                        close();
+                      }}
+                      onClear={() => patch({ counterparty: undefined })}
+                    />
+                  )}
+                </HeaderFilter>
+              ) : (
+                '对手方'
+              ),
               key: 'counterparty',
               dataIndex: 'counterparty',
               width: 170,
@@ -1245,7 +1451,30 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
-              title: '分类',
+              title: compare ? (
+                <HeaderFilter label="分类" active={!!query.category}>
+                  {(close) => (
+                    <select
+                      className="input"
+                      value={query.category ?? ''}
+                      onChange={(e) => {
+                        patch({ category: e.target.value || undefined });
+                        close();
+                      }}
+                    >
+                      <option value="">全部分类</option>
+                      {categoryFilterValues.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                      <option value="__none__">未分类</option>
+                    </select>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '分类'
+              ),
               key: 'category',
               width: 140,
               ellipsis: true,
@@ -1262,7 +1491,29 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                 ),
             },
             {
-              title: '开户主体',
+              title: compare ? (
+                <HeaderFilter label="开户主体" active={!!query.holder}>
+                  {(close) => (
+                    <select
+                      className="input"
+                      value={query.holder ?? ''}
+                      onChange={(e) => {
+                        patch({ holder: e.target.value || undefined, accountNo: undefined });
+                        close();
+                      }}
+                    >
+                      <option value="">全部开户主体</option>
+                      {(options?.holders ?? []).map((h) => (
+                        <option key={h} value={h}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '开户主体'
+              ),
               key: 'holder',
               dataIndex: 'holder',
               width: 168,
@@ -1270,7 +1521,40 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? <span title={v}>{v}</span> : '—'),
             },
             {
-              title: '银行 / 账户',
+              title: compare ? (
+                <HeaderFilter label="银行 / 账户" active={!!(query.bank || query.accountNo)}>
+                  {(close) => (
+                    <>
+                      <select
+                        className="input"
+                        value={query.bank ?? ''}
+                        onChange={(e) => {
+                          patch({ bank: e.target.value || undefined, accountNo: undefined });
+                          close();
+                        }}
+                      >
+                        <option value="">全部银行</option>
+                        {(options?.banks ?? []).map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                          </option>
+                        ))}
+                      </select>
+                      <TextFilter
+                        value={query.accountNo}
+                        placeholder="账号包含…"
+                        onApply={(v) => {
+                          patch({ accountNo: v });
+                          close();
+                        }}
+                        onClear={() => patch({ accountNo: undefined })}
+                      />
+                    </>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '银行 / 账户'
+              ),
               key: 'bank',
               width: 160,
               ellipsis: true,
@@ -1284,7 +1568,35 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
                 ),
             },
             {
-              title: '募投项目',
+              title: compare ? (
+                <HeaderFilter label="募投项目" active={!!query.fundUse}>
+                  {(close) => (
+                    <select
+                      className="input"
+                      value={query.fundUse ?? ''}
+                      onChange={(e) => {
+                        patch({ fundUse: e.target.value || undefined });
+                        close();
+                      }}
+                    >
+                      <option value="">全部募投</option>
+                      {options?.hasUnassignedFundUse ? <option value="__none__">未归集</option> : null}
+                      {(options?.specialFundUses ?? []).map((u) => (
+                        <option key={u.query} value={u.query}>
+                          {u.label}
+                        </option>
+                      ))}
+                      {(options?.fundUses ?? []).map((u) => (
+                        <option key={u.id} value={String(u.id)}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '募投项目'
+              ),
               key: 'fundUse',
               dataIndex: 'fundUse',
               width: 140,
@@ -1292,7 +1604,27 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
               render: (v: unknown) => (typeof v === 'string' && v ? v : '—'),
             },
             {
-              title: '状态',
+              title: compare ? (
+                <HeaderFilter label="状态" active={!!query.status}>
+                  {(close) => (
+                    <select
+                      className="input"
+                      value={query.status ?? ''}
+                      onChange={(e) => {
+                        patch({ status: (e.target.value || undefined) as TxQuery['status'] });
+                        close();
+                      }}
+                    >
+                      <option value="">全部状态</option>
+                      <option value="ok">正常</option>
+                      <option value="needs_review">待复核</option>
+                      <option value="fixed">已修正</option>
+                    </select>
+                  )}
+                </HeaderFilter>
+              ) : (
+                '状态'
+              ),
               key: 'status',
               width: 124,
               render: (_: unknown, r: TxRow) => {

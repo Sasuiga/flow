@@ -457,6 +457,14 @@ function buildWhere(
     where.push('t.counterparty LIKE ?');
     args.push(`%${q.counterparty}%`);
   }
+  if (has('amountMin')) {
+    where.push('t.amount >= ?');
+    args.push(Number(q.amountMin));
+  }
+  if (has('amountMax')) {
+    where.push('t.amount <= ?');
+    args.push(Number(q.amountMax));
+  }
   if (has('q')) {
     where.push('t.summary LIKE ?');
     args.push(`%${q.q}%`);

@@ -1490,6 +1490,67 @@ button.page-chip.thin span:last-child {
   position: relative;
 }
 
+/* 对照表头筛选 */
+.tx-hf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tx-hf-btn svg {
+  opacity: 0.45;
+}
+
+.tx-hf-btn:hover,
+.tx-hf-btn.active {
+  color: var(--ui-primary);
+}
+
+.tx-hf-btn.active svg {
+  opacity: 1;
+}
+
+.tx-hf {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+
+.tx-hf .input {
+  width: 100%;
+}
+
+.tx-hf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tx-hf-row > span {
+  flex: 0 0 20px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.tx-hf-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx-hf-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .tx-compare-fields-menu {
   position: absolute;
   top: calc(100% + 6px);
