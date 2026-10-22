@@ -4,7 +4,6 @@ import { Table } from 'antd';
 import { BankFile, specialFundUseByQuery, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
 import { api } from '../api';
 import { Modal } from '../components/Modal';
-import { pickLlmDialog, pickPagesDialog } from '../lib/confirm';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect } from '../lib/moneyUnit';
 type TxPageProps = {
   /** 右上角当前任务。交易页只看这一份资料 */
@@ -172,8 +171,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [jumpSeq, setJumpSeq] = useState(0);
   /** 大于 0 时，PDF 用 view=Fit 把该页整页放进右栏中间。每次点击加一，同一页也会重新定位。 */
   const [pdfFit, setPdfFit] = useState(0);
-  const [pageGaps, setPageGaps] = useState<number[]>([]);
-  const [pageBusy, setPageBusy] = useState(false);
   const [reviewLeft, setReviewLeft] = useState<number | null>(null);
   const jumpToId = useRef<number | null>(null);
   const localUrlRef = useRef<string | null>(null);
@@ -824,101 +821,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     };
   }, [compareFile, query.taskId, reloadKey]);
 
-  useEffect(() => {
-    if (!compareFile || localUrl) {
-      setPageGaps([]);
-      return;
-    }
-    let cancelled = false;
-    void api
-      .filePages(compareFile.id)
-      .then((info) => {
-        if (!cancelled) setPageGaps(info.gaps);
-      })
-      .catch(() => {
-        if (!cancelled) setPageGaps([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [compareFile, localUrl]);
-
-  /** 重读结束后把这一页的第一笔滚到中间，方便直接看到换上或留下的记录。 */
-  async function focusPdfPage(fileId: number, pdfPage: number) {
-    if (query.taskId == null) return;
-    const pageSize = query.pageSize ?? 50;
-    const chunk = 200;
-    for (let page = 1; page <= 50; page++) {
-      const r = await api.listTransactions({
-        taskId: query.taskId,
-        fileId,
-        sort: 'stmt',
-        page,
-        pageSize: chunk,
-      });
-      const idx = r.rows.findIndex((row) => row.page === pdfPage);
-      if (idx >= 0) {
-        const row = r.rows[idx];
-        const listPage = Math.floor(((page - 1) * chunk + idx) / pageSize) + 1;
-        jumpToId.current = row.id;
-        setJumpSeq((n) => n + 1);
-        setPdfFit((n) => n + 1);
-        setFocus({ id: row.id, fileId: row.fileId, fileName: row.fileName, page: row.page || 1 });
-        setQuery((q) => (q.page === listPage ? q : { ...q, page: listPage }));
-        return;
-      }
-      if (page * chunk >= r.total || r.rows.length === 0) break;
-    }
-  }
-
-  async function doReparsePages() {
-    if (!compareFile || taskId == null || localUrl) return;
-    setPageBusy(true);
-    setNotice(undefined);
-    setError(undefined);
-    try {
-      const info = await api.filePages(compareFile.id);
-      setPageGaps(info.gaps);
-      const suggest = focus?.fileId === compareFile.id ? focus.page : undefined;
-      const pages = await pickPagesDialog({ ...info, suggest });
-      if (!pages) return;
-      const settings = await api.getSettings();
-      const profiles = (settings.llmProfiles ?? []).filter((p) => p.base && p.model);
-      if (profiles.length === 0) {
-        setError('请先在设置里添加模型，并填好端点和模型名');
-        return;
-      }
-      const picked = await pickLlmDialog(profiles, settings.defaultLlmId || profiles[0].id);
-      if (!picked) return;
-      const r = await api.parseFile(compareFile.id, false, picked.id, pages);
-      const list = pages.join('、');
-      setNotice(
-        !r.queued
-          ? '该文件正在解析中'
-          : `用「${picked.name}」重读第 ${list} 页，读完只替换这些页的解析结果，手工补录的行和其它页保持原记录`,
-      );
-      if (!r.queued) return;
-      const fileId = compareFile.id;
-      for (let i = 0; i < 90; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const detail = await api.getTask(taskId);
-        const file = detail.files.find((item) => item.id === fileId);
-        if (!file || file.status !== 'parsing') {
-          setReloadKey((k) => k + 1);
-          const again = await api.filePages(fileId).catch(() => null);
-          if (again) setPageGaps(again.gaps);
-          if (pages[0]) await focusPdfPage(fileId, pages[0]).catch(() => undefined);
-          setNotice(file?.error ? file.error : `第 ${list} 页已补进原记录，手工补录的行已保留`);
-          return;
-        }
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setPageBusy(false);
-    }
-  }
-
   const pdfPage = focus?.page && focus.page > 0 ? focus.page : 1;
   const pdfBase = localUrl ?? (compareFile ? `/api/files/${compareFile.id}/pdf` : '');
   // view=Fit：Chrome 内置阅读器把这一页整页放进右栏，不用再拖 PDF 滑块。
@@ -934,57 +836,6 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             {localName ? ` · ${localName}` : ''}
           </span>
           <div className="tx-compare-bar-actions">
-            <div className="tx-compare-fields" ref={colsMenuRef}>
-              <button
-                type="button"
-                className="secondary-button"
-                aria-expanded={colsOpen}
-                title="选择对照表显示哪些字段"
-                onClick={() => setColsOpen((open) => !open)}
-              >
-                <SlidersHorizontal size={14} /> 字段
-              </button>
-              {colsOpen ? (
-                <div className="tx-compare-fields-menu" role="group" aria-label="显示字段">
-                  {COMPARE_COLUMNS.map((col) => {
-                    const checked = compareCols.includes(col.key);
-                    return (
-                      <label key={col.key}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={checked && compareCols.length <= 1}
-                          onChange={() => toggleCompareCol(col.key)}
-                        />
-                        {col.label}
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!focusedRow || insertBusy}
-              title={
-                focusedRow
-                  ? `在第 ${focusedRow.page} 页这一笔后面补一笔，按印刷位置插入`
-                  : '先在左侧点一行，补录的行会插在它后面'
-              }
-              onClick={() => focusedRow && startInsert(focusedRow)}
-            >
-              <Plus size={14} /> 补一笔
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={pageBusy || !!localUrl || compareFile.status === 'parsing'}
-              title={localUrl ? '本地 PDF 不能补解析，请对照任务里的原文件' : '只重读选中的页，结果替换进原记录'}
-              onClick={() => void doReparsePages()}
-            >
-              {pageGaps.length > 0 ? `补解析漏页（${pageGaps.length}）` : '解析指定页'}
-            </button>
             <button type="button" className="secondary-button" onClick={() => void openCompare()}>
               切换
             </button>
@@ -1182,6 +1033,50 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       <div className={compare ? 'tx-compare-left' : undefined} style={compare ? { width: `${split * 100}%` } : undefined}>
       {compare ? (
         <div className="tx-compare-next-bar">
+          <div className="tx-compare-left-actions">
+            <div className="tx-compare-fields" ref={colsMenuRef}>
+              <button
+                type="button"
+                className="secondary-button"
+                aria-expanded={colsOpen}
+                title="选择对照表显示哪些字段"
+                onClick={() => setColsOpen((open) => !open)}
+              >
+                <SlidersHorizontal size={14} /> 字段
+              </button>
+              {colsOpen ? (
+                <div className="tx-compare-fields-menu" role="group" aria-label="显示字段">
+                  {COMPARE_COLUMNS.map((col) => {
+                    const checked = compareCols.includes(col.key);
+                    return (
+                      <label key={col.key}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={checked && compareCols.length <= 1}
+                          onChange={() => toggleCompareCol(col.key)}
+                        />
+                        {col.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!focusedRow || insertBusy}
+              title={
+                focusedRow
+                  ? `在第 ${focusedRow.page} 页这一笔后面补一笔，按印刷位置插入`
+                  : '先在左侧点一行，补录的行会插在它后面'
+              }
+              onClick={() => focusedRow && startInsert(focusedRow)}
+            >
+              <Plus size={14} /> 补一笔
+            </button>
+          </div>
           <button
             type="button"
             className={`tx-next-review${reviewLeft === 0 ? ' empty' : ''}`}
