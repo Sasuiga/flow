@@ -171,6 +171,36 @@ transactionsRouter.post('/bulk-date', (req, res) => {
   res.json({ updated: bulkSetDate(b.ids as number[], iso), date: iso });
 });
 
+/**
+ * 人工保存后，去掉已经被当前字段满足的复核提示。
+ * 只在内容确实补上时清：「低置信」「表头未识别」这类识别质量提示保留。
+ */
+function stripResolvedNotes(
+  note: string | null,
+  row: {
+    date: string;
+    summary: string;
+    counterparty: string;
+    counterpartyAccount: string | null;
+  },
+): string | null {
+  if (!note) return null;
+  const parts = note
+    .split('；')
+    .map((part) => part.trim())
+    .filter((part) => {
+      if (!part) return false;
+      if (part === '日期缺失' || part.startsWith('日期格式异常') || part.startsWith('日期疑似截断')) {
+        return !normalizeBankDate(row.date);
+      }
+      if (part === '摘要缺失') return !row.summary;
+      if (part === '对方信息缺失') return !row.counterparty && !row.counterpartyAccount;
+      if (part === '收付方向未识别') return false;
+      return true;
+    });
+  return parts.length > 0 ? parts.join('；') : null;
+}
+
 /** 人工修正一行（解析字段 + M4 的改判）。保存后按印刷顺序重算该文件全部前后余额，含原先标为正常的行 */
 transactionsRouter.patch('/:id', (req, res) => {
   const id = Number(req.params.id);
@@ -200,31 +230,49 @@ transactionsRouter.patch('/:id', (req, res) => {
         ? null
         : Number(b.balance);
     if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
-    const cur = db.prepare('SELECT counterparty_account, channel FROM transactions WHERE id = ?').get(id) as {
+    const cur = db
+      .prepare('SELECT counterparty_account, channel, review_note FROM transactions WHERE id = ?')
+      .get(id) as {
       counterparty_account: string | null;
       channel: string | null;
+      review_note: string | null;
     };
     const textOr = (key: 'counterpartyAccount' | 'channel', prev: string | null) => {
       if (!(key in b)) return prev;
       const raw = b[key];
       return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
     };
+    const date = typeof b.date === 'string' ? b.date.trim() : '';
+    const summary = typeof b.summary === 'string' ? b.summary.trim() : '';
+    const counterparty = typeof b.counterparty === 'string' ? b.counterparty.trim() : '';
+    const counterpartyAccount = textOr('counterpartyAccount', cur.counterparty_account);
     db.prepare(
       `UPDATE transactions
        SET date = ?, summary = ?, amount = ?, direction = ?, balance = ?, counterparty = ?,
            counterparty_account = ?, channel = ?
        WHERE id = ?`,
     ).run(
-      typeof b.date === 'string' && b.date.trim() ? b.date.trim() : null,
-      typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null,
+      date || null,
+      summary || null,
       Math.round(amount * 100) / 100,
       b.direction,
       balance == null ? null : Math.round(balance * 100) / 100,
-      typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null,
-      textOr('counterpartyAccount', cur.counterparty_account),
+      counterparty || null,
+      counterpartyAccount,
       textOr('channel', cur.channel),
       id,
     );
+    // 补齐了缺失的日期/摘要/对方信息后，对应的复核提示要跟着消失，
+    // 否则状态一直卡在「待复核」。
+    const note = stripResolvedNotes(cur.review_note, {
+      date,
+      summary,
+      counterparty,
+      counterpartyAccount,
+    });
+    if (note !== (cur.review_note ?? null)) {
+      db.prepare('UPDATE transactions SET review_note = ? WHERE id = ?').run(note, id);
+    }
   }
   if ('category' in b && b.category !== undefined) {
     if (!setTxCategory(id, b.category == null ? null : String(b.category).trim() || null)) {
