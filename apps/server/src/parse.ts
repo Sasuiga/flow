@@ -13,6 +13,8 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { getSettings, llmProfileById } from './settings.js';
 import { extractJson, isAbortError, llmChat, probeLLM } from './ai.js';
+import { ocrPage } from './ocr.js';
+import { parseTablePage, TableTx } from './table.js';
 import { LlmProfile, ParseStep, ParseStepState } from '@flow/shared';
 import { classifyTask } from './categorize.js';
 import { scanPdfFiles } from './fsutil.js';
@@ -620,7 +622,9 @@ export async function structureBatch(
 
 /**
  * 模型偶尔会把提示里的「上一页最后几笔」原样抄回来当成这一页的交易。
- * raw 与提示行完全相同的丢掉；空白页尤其容易触发。
+ * raw 与提示行完全相同的丢掉。
+ * 注意：提示行已不再放进视觉提示词——它在场时小模型会把提示当成整页内容照抄，
+ * 只输出那两行、把真正的交易全漏掉；这里只留作兜底过滤。
  */
 export function dropEchoedRows(rows: unknown[], prevTail?: string): unknown[] {
   const tail = new Set(
@@ -648,9 +652,7 @@ export async function structurePageImage(
   signal?: AbortSignal,
 ): Promise<StructuredBatch> {
   const user =
-    `文件 ${fileRel}，第 ${image.page}/${totalPages} 页。\n` +
-    (prevTail ? `上一页最后几笔已经入库，不要重复输出：\n${prevTail}\n\n` : '') +
-    '请阅读这张流水图片，输出 JSON。';
+    `文件 ${fileRel}，第 ${image.page}/${totalPages} 页。\n` + '请阅读这张流水图片，输出 JSON。';
   const content = await llmChat(
     settings.llmBase,
     settings.llmModel,
@@ -683,6 +685,99 @@ export async function structurePageImage(
     periodEnd: cleanDate(j.period_end),
     txs,
     rawCount: rows.length,
+  };
+}
+
+/* ---------- OCR 几何表格通道（主通道） ---------- */
+
+export interface TableChannelSettings {
+  ocrBase: string;
+  ocrExtraHeader: string;
+}
+
+function tableTxToNormTx(
+  t: TableTx,
+  page: number,
+  lineNo: number,
+  cols?: { hasSummary?: boolean; hasCounterparty?: boolean },
+): NormTx {
+  const review: string[] = [];
+  if (t.review) review.push(t.review);
+  const dateRaw = t.date?.trim();
+  const date = dateRaw ? normalizeBankDate(dateRaw) : undefined;
+  if (!dateRaw) review.push('日期缺失');
+  else if (!date) review.push(`日期格式异常(${dateRaw})`);
+  const summary = cleanStr(t.summary);
+  // 整张表没有摘要列时，空摘要不是漏识别，不用逐笔标。
+  if (!summary && cols?.hasSummary !== false) review.push('摘要缺失');
+  const counterparty = cleanStr(t.counterparty);
+  const counterpartyAccount = cleanStr(t.counterpartyAccount);
+  // 对外收付却没有对方信息：多半是 OCR 把对方栏并进了摘要或被印章盖住了。
+  // 手续费/利息/存款类本来就没有对方，不报。
+  const desc = `${summary ?? ''} ${cleanStr(t.channel) ?? ''}`;
+  if (
+    cols?.hasCounterparty !== false &&
+    !counterparty &&
+    !counterpartyAccount &&
+    /转账|汇款|货款|预付|收款|付款/.test(desc) &&
+    !/手续费|费用|利息|收息|结息|存款|理财|税/.test(desc)
+  ) {
+    review.push('对方信息缺失');
+  }
+  return {
+    page,
+    lineNo,
+    date,
+    summary,
+    amount: t.amount,
+    direction: t.direction,
+    balance: t.balance,
+    counterparty,
+    counterpartyAccount,
+    channel: cleanStr(t.channel),
+    confidence: t.confidence,
+    raw: cleanStr(t.raw),
+    review: review.join('；'),
+  };
+}
+
+/**
+ * 一页走 PP-OCR + 几何重建。几何上不成立（没表头/没行/大部分行没金额）时返回 ok:false，
+ * 由调用方退回视觉模型；端点不可达会直接抛错，也由调用方接住。
+ * prevBalance = 上一页末笔余额，用于本页首笔的连续性判断。
+ */
+async function structurePageTable(
+  settings: TableChannelSettings,
+  image: PageImage,
+  prevBalance?: number,
+  signal?: AbortSignal,
+): Promise<{ ok: true; batch: StructuredBatch } | { ok: false; reason: string }> {
+  const boxes = await ocrPage(
+    { ocrBase: settings.ocrBase, ocrExtraHeader: settings.ocrExtraHeader },
+    image.jpeg,
+    signal,
+  );
+  const r = parseTablePage(boxes, prevBalance);
+  if (!r.ok) return { ok: false, reason: r.reason };
+  const page = r.page;
+  const hasSummary = page.columns.some((fs) => fs.includes('summary'));
+  const hasCounterparty = page.columns.some((fs) => fs.includes('counterparty_name') || fs.includes('counterparty_account'));
+  const txs = page.txs.map((t, i) => tableTxToNormTx(t, image.page, i + 1, { hasSummary, hasCounterparty }));
+  console.log(
+    `[parse] 第 ${image.page} 页 OCR 表格：${page.rowCount} 行，可用 ${txs.length} 笔` +
+      `，余额断点 ${page.continuityBreaks}${page.usedMoneySolver ? '，已拆金额粘连' : ''}`,
+  );
+  return {
+    ok: true,
+    batch: {
+      bank: cleanStr(page.meta.bank),
+      accountNo: cleanStr(page.meta.accountNo),
+      accountName: cleanStr(page.meta.accountName),
+      periodStart: cleanDate(page.meta.periodStart),
+      periodEnd: cleanDate(page.meta.periodEnd),
+      txs,
+      rawCount: page.rowCount,
+    },
   };
 }
 
@@ -811,6 +906,18 @@ function tailBeforePage(fileId: number, page: number): string | undefined {
   rows.reverse();
   if (rows.length === 0) return undefined;
   return rows.map((t) => t.raw_text || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n');
+}
+
+/** 指定页重读时，取库里更早页的最后一笔余额，给本页首笔做连续性参照。 */
+function lastBalanceBeforePage(fileId: number, page: number): number | undefined {
+  const row = db
+    .prepare(
+      `SELECT balance FROM transactions
+       WHERE file_id = ? AND page > 0 AND page < ? AND balance IS NOT NULL
+       ORDER BY page DESC, line_no DESC, id DESC LIMIT 1`,
+    )
+    .get(fileId, page) as { balance: number } | undefined;
+  return row ? Number(row.balance) : undefined;
 }
 
 /** 只删掉这些页的交易再写入新结果（含空结果）。其它页不动。关注、规则命中随这些行一起去掉。 */
@@ -948,22 +1055,29 @@ export async function parseFileTextLayer(
   prog.set('render', 'done', `${images.length} 页`);
 
   const chosen = opts?.llm;
-  const savedSettings = chosen ? null : getSettings();
+  const appSettings = getSettings();
   const s = {
-    llmBase: chosen?.base ?? savedSettings!.llmBase,
-    llmModel: chosen?.model ?? savedSettings!.llmModel,
-    llmExtraHeader: chosen?.extraHeader ?? savedSettings!.llmExtraHeader,
+    llmBase: chosen?.base ?? appSettings.llmBase,
+    llmModel: chosen?.model ?? appSettings.llmModel,
+    llmExtraHeader: chosen?.extraHeader ?? appSettings.llmExtraHeader,
   };
+  const tableSettings: TableChannelSettings = {
+    ocrBase: appSettings.ocrBase,
+    ocrExtraHeader: appSettings.ocrExtraHeader,
+  };
+  let ocrAvailable = !!tableSettings.ocrBase?.trim();
   const all: NormTx[] = [];
   const pageReads: Array<{ page: number; raw: number; n: number }> = [];
   let meta: Partial<StructuredBatch> = {};
   let prevTail: string | undefined;
+  let prevBalance: number | undefined;
   let startAt = 0;
   if (saved && saved.totalPages === images.length && saved.donePage >= 1 && saved.donePage <= images.length) {
     startAt = saved.donePage;
     all.push(...saved.txs.map((t) => ({ ...t, review: t.review || '' })));
     meta = { ...saved.meta };
     prevTail = saved.prevTail;
+    prevBalance = [...saved.txs].reverse().find((t) => t.balance != null)?.balance;
     prog.set('vision', 'run', `前 ${saved.donePage} 页已保留，从第 ${Math.min(saved.donePage + 1, images.length)} 页继续`);
   } else if (saved) {
     console.log(`[parse] file#${fileId} 断点和当前 PDF 对不上，从第 1 页重读`);
@@ -976,19 +1090,58 @@ export async function parseFileTextLayer(
       failedPage = image.page;
       if (pageMode) {
         const prevRendered = i > 0 ? images[i - 1].page : 0;
-        if (image.page !== prevRendered + 1) prevTail = tailBeforePage(fileId, image.page);
+        if (image.page !== prevRendered + 1) {
+          prevTail = tailBeforePage(fileId, image.page);
+          prevBalance = lastBalanceBeforePage(fileId, image.page);
+        }
       }
       const pageHint = `已暂停 · 第 ${image.page}/${totalPages} 页，继续后重读这一页`;
       await hold('vision', pageHint);
       let r: StructuredBatch | undefined;
       let attempt = 0;
+      let tableForPage = ocrAvailable;
       for (;;) {
         prog.set('vision', 'run', pageMode ? `重读第 ${image.page}/${totalPages} 页` : `第 ${image.page}/${totalPages} 页`);
         prog.set('structure', 'run', `正在整理第 ${image.page} 页，已抽出 ${all.length} 笔`);
         try {
-          const got = await structurePageImage(s, relPath, image, totalPages, prevTail, parseQueue.signalFor(fileId));
-          if (parseQueue.consumeAbort(fileId) === 'stop') throw new ParseStopped();
-          r = got;
+          // 主通道：PP-OCR + 几何重建。这一页不成立就单独退回视觉模型，不影响后面的页。
+          if (tableForPage && !r) {
+            try {
+              prog.set('vision', 'run', `第 ${image.page}/${totalPages} 页 OCR 认表`);
+              const got = await structurePageTable(tableSettings, image, prevBalance, parseQueue.signalFor(fileId));
+              if (parseQueue.consumeAbort(fileId) === 'stop') throw new ParseStopped();
+              if (got.ok) {
+                r = got.batch;
+              } else {
+                console.log(
+                  `[parse] file#${fileId} 第 ${image.page} 页 OCR 表格未成立（${got.reason}），改用视觉模型`,
+                );
+                tableForPage = false;
+              }
+            } catch (e) {
+              if (isStopped(e)) throw e;
+              const kind = parseQueue.consumeAbort(fileId);
+              if (kind === 'pause') {
+                prog.set('vision', 'pause', pageHint);
+                prog.set('structure', 'pause', '已暂停');
+                await parseQueue.gate(fileId);
+                attempt = 0;
+                continue;
+              }
+              if (kind === 'stop') throw new ParseStopped();
+              // 端点不可达/超时：后面的页也不再试 OCR，直接走视觉模型
+              console.log(
+                `[parse] file#${fileId} 第 ${image.page} 页 OCR 通道不可用：${(e as Error).message}，改用视觉模型`,
+              );
+              tableForPage = false;
+              ocrAvailable = false;
+            }
+          }
+          if (!r) {
+            const got = await structurePageImage(s, relPath, image, totalPages, prevTail, parseQueue.signalFor(fileId));
+            if (parseQueue.consumeAbort(fileId) === 'stop') throw new ParseStopped();
+            r = got;
+          }
           break;
         } catch (e) {
           if (isStopped(e)) throw e;
@@ -1024,6 +1177,8 @@ export async function parseFileTextLayer(
       if (r.periodEnd) meta.periodEnd = r.periodEnd;
       if (pageMode) pageReads.push({ page: image.page, raw: r.rawCount ?? r.txs.length, n: r.txs.length });
       all.push(...r.txs);
+      const lastBal = [...r.txs].reverse().find((t) => t.balance != null);
+      if (lastBal) prevBalance = lastBal.balance;
       const last2 = r.txs.slice(-2);
       prevTail = last2.length
         ? last2.map((t) => t.raw || `${t.date ?? ''} ${t.direction} ${t.amount}`).join('\n')
