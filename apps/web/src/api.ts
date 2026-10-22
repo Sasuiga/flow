@@ -144,8 +144,8 @@ export const api = {
   cashMandate: (id: number) => j<CashMandate>(`/api/tasks/${id}/cash-mandate`),
   saveCashMandate: (id: number, body: { opening: number; openingAsOf: string; boards: { startDate: string; endDate: string; limitAmount: number; note: string }[] }) =>
     j<CashMandate>(`/api/tasks/${id}/cash-mandate`, { method: 'PUT', body: JSON.stringify(body) }),
-  runFlow: (id: number, force = false) =>
-    j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force }) }),
+  runFlow: (id: number, force = false, llmId?: string) =>
+    j<FlowResponse>(`/api/tasks/${id}/flow`, { method: 'POST', body: JSON.stringify({ force, llmId }) }),
   /** M4：任务级 LLM 批量分类（force=连 LLM 已分的也重分，人工改判不动） */
   categorizeTask: (id: number, force = false) =>
     j<ClassifyOutcome>(`/api/tasks/${id}/categorize`, { method: 'POST', body: JSON.stringify({ force }) }),

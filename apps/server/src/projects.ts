@@ -8,6 +8,7 @@ import { dedicatedBalances } from './reports.js';
 import { cashLots, saveCashSplit } from './cashLots.js';
 import { getCashMandate, saveCashMandate } from './cashMandate.js';
 import { getFlow, runFlow } from './flow.js';
+import { llmProfileById } from './settings.js';
 import { syncTaskWatchers } from './watch.js';
 import { BankFile, ClientBrief, CreateEntityInput, FlowTask, FundUse, FundUseKind, normAccountNo, ParseStep, ProjectAccount, ProjectBrief, specialFundUseByRole, TaskView } from '@flow/shared';
 
@@ -459,8 +460,11 @@ tasksRouter.get('/:id/category-focus', (req, res) => {
 tasksRouter.post('/:id/flow', (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: '任务不存在' });
-  const force = Boolean((req.body as { force?: boolean } | undefined)?.force);
-  void runFlow(id, force)
+  const body = (req.body ?? {}) as { force?: boolean; llmId?: unknown };
+  const force = Boolean(body.force);
+  const llmId = typeof body.llmId === 'string' && body.llmId ? body.llmId : undefined;
+  if (llmId && !llmProfileById(llmId)) return res.status(400).json({ error: '所选模型不存在，请到设置里重新添加' });
+  void runFlow(id, force, llmId)
     .then((out) => res.json(out))
     .catch((e: Error) => res.status(500).json({ error: e.message || '分析失败' }));
 });

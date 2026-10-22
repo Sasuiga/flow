@@ -15,11 +15,12 @@ import {
   FlowPartyLine,
   FlowResponse,
   FlowResult,
+  LlmProfile,
   normAccountNo,
 } from '@flow/shared';
 import { db } from './db.js';
 import { extractJson, llmChat } from './ai.js';
-import { getSettings } from './settings.js';
+import { getSettings, llmProfileById } from './settings.js';
 
 const TREASURY_RE = /大额存单|结构性存款|定期转存|应付利息|存款利息|手续费|汇划|电子汇划|理财|产品代码/;
 const LOW_COUNT = 3;
@@ -319,10 +320,18 @@ function asKind(raw: unknown): FlowKind | null {
   return null;
 }
 
-async function askModel(clientName: string, accounts: Acct[], groups: Group[]): Promise<void> {
+async function askModel(
+  clientName: string,
+  accounts: Acct[],
+  groups: Group[],
+  profile?: LlmProfile,
+): Promise<void> {
   const open = groups.filter((g) => !g.locked);
   if (open.length === 0) return;
   const settings = getSettings();
+  const base = profile?.base?.trim() || settings.llmBase;
+  const model = profile?.model?.trim() || settings.llmModel;
+  const extraHeader = profile?.extraHeader || settings.llmExtraHeader;
   const acctLines = accounts.map((a) => `- ${a.key} ${bankShort(a.bank)} ${a.holder} 尾号${tail(a.accountNo)}`).join('\n');
   const lines = groups
     .map((g) => {
@@ -347,7 +356,7 @@ ${lines}
 
 没有对方账号、但日期和金额能对上另一本专户流水的，优先 dedicated，不要标成 own。
 {"items":[{"gid":"g1","kind":"dedicated","peerKey":"","peerName":"","peerAccount":"","pairGid":""}]}`;
-  const content = await llmChat(settings.llmBase, settings.llmModel, settings.llmExtraHeader || undefined, system, user, {
+  const content = await llmChat(base, model, extraHeader || undefined, system, user, {
     jsonMode: true,
     maxTokens: 8000,
     timeoutMs: 180_000,
@@ -722,7 +731,7 @@ function buildBalances(rows: Record<string, unknown>[], accounts: Acct[]): FlowB
   return out;
 }
 
-async function compute(taskId: number): Promise<FlowResponse> {
+async function compute(taskId: number, profile?: LlmProfile): Promise<FlowResponse> {
   const ctx = loadContext(taskId);
   if (!ctx) return { status: 'empty', message: '任务不存在' };
   if (ctx.accounts.length === 0) return { status: 'empty', message: '先登记募资专户，才能区分专户之间的划转' };
@@ -734,7 +743,7 @@ async function compute(taskId: number): Promise<FlowResponse> {
   const openBefore = groups.some((g) => !g.locked);
   if (openBefore) {
     try {
-      await askModel(ctx.clientName, ctx.accounts, groups);
+      await askModel(ctx.clientName, ctx.accounts, groups, profile);
       source = 'llm';
     } catch (e) {
       console.error('[flow] llm failed', (e as Error).message);
@@ -838,9 +847,10 @@ export function getFlow(taskId: number): FlowResponse {
   return readCache(taskId, sig, legacy) ?? { status: 'missing' };
 }
 
-export function runFlow(taskId: number, force: boolean): Promise<FlowResponse> {
+export function runFlow(taskId: number, force: boolean, llmId?: string): Promise<FlowResponse> {
   const existing = running.get(taskId);
   if (existing) return existing;
+  const profile = llmProfileById(llmId);
   const job = (async () => {
     const ctx = loadContext(taskId);
     if (!ctx) return { status: 'empty' as const, message: '任务不存在' };
@@ -849,7 +859,7 @@ export function runFlow(taskId: number, force: boolean): Promise<FlowResponse> {
       const cached = readCache(taskId, sig, signatureLegacy(ctx.accounts, ctx.rows));
       if (cached?.status === 'ready') return cached;
     }
-    const out = await compute(taskId);
+    const out = await compute(taskId, profile);
     if (out.result) {
       db.prepare(
         `INSERT INTO flow_analyses(task_id, signature, payload, created_at) VALUES(?,?,?,?)

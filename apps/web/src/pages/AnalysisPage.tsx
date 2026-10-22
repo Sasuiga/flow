@@ -11,6 +11,7 @@ import {
   TaskBrief,
 } from '@flow/shared';
 import { api } from '../api';
+import { pickLlmDialog } from '../lib/confirm';
 import { formatDateTime } from '../lib/format';
 import { formatByUnit, MoneyUnit, MoneyUnitSelect, parseMoneyInput, rescaleMoneyInput } from '../lib/moneyUnit';
 import CashMandatePanel from './CashMandatePanel';
@@ -75,7 +76,21 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
           apply(res);
           return;
         }
-        apply(await api.runFlow(task.id, true));
+        // 需要现算时先让用户选模型，不同模型的资金关系判断可能差很多
+        const settings = await api.getSettings();
+        if (cancel) return;
+        const profiles = (settings.llmProfiles ?? []).filter((p) => p.base?.trim() && p.model?.trim());
+        if (profiles.length === 0) {
+          setError('请先在设置里添加模型，并填好端点和模型名');
+          return;
+        }
+        const picked = await pickLlmDialog(profiles, settings.defaultLlmId || profiles[0].id);
+        if (cancel) return;
+        if (!picked) {
+          setMessage('已取消分析。点右上角「选择模型并分析」可以重来。');
+          return;
+        }
+        apply(await api.runFlow(task.id, true, picked.id));
       })
       .catch((e: Error) => {
         if (!cancel) setError(e.message);
@@ -109,15 +124,26 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
     };
   }, [task?.id]);
 
-  const rerun = () => {
-    if (!task) return;
-    setLoading(true);
+  /** 重新分析前先选模型：不同模型的资金关系判断可能差很多 */
+  const rerun = async () => {
+    if (!task || loading) return;
     setError('');
-    void api
-      .runFlow(task.id, true)
-      .then(apply)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false));
+    setLoading(true);
+    try {
+      const settings = await api.getSettings();
+      const profiles = (settings.llmProfiles ?? []).filter((p) => p.base?.trim() && p.model?.trim());
+      if (profiles.length === 0) {
+        setError('请先在设置里添加模型，并填好端点和模型名');
+        return;
+      }
+      const picked = await pickLlmDialog(profiles, settings.defaultLlmId || profiles[0].id);
+      if (!picked) return;
+      apply(await api.runFlow(task.id, true, picked.id));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const focusView = focus.find((v) => v.category === tab);
@@ -150,11 +176,11 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
           <div>
             <h1 style={{ fontSize: 18, marginBottom: 0 }}>资金流向</h1>
           </div>
-          {task && result ? (
+          {task ? (
             <div className="page-header-actions">
-              <button type="button" className="secondary-button" onClick={rerun} disabled={loading}>
+              <button type="button" className="secondary-button" onClick={() => void rerun()} disabled={loading}>
                 {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-                重新分析
+                {result ? '重新分析' : '选择模型并分析'}
               </button>
               <MoneyUnitSelect value={flowUnit} onChange={setFlowUnit} />
             </div>
@@ -184,7 +210,9 @@ export default function AnalysisPage({ task }: { task: TaskBrief | null }) {
         {result ? (
           <>
             {status === 'stale' ? <div className="flow-error">流水有变化，可以重新分析。</div> : null}
-            {result.fallback ? <div className="flow-error">模型没有返回，这次只按账号和摘要归类。</div> : null}
+            {result.fallback ? (
+              <div className="flow-error">模型没有返回，这次只按账号和摘要归类。点「重新分析」可以换一个模型再试。</div>
+            ) : null}
             {result.skipped > 0 ? (
               <p className="flow-note">{result.skipped} 笔流水对不上募资专户，没有画进去。</p>
             ) : null}
