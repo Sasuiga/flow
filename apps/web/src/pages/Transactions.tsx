@@ -1,4 +1,4 @@
-import { Bookmark, Columns2, FilterX, Inbox, Plus } from 'lucide-react';
+import { Bookmark, Columns2, FilterX, Inbox, Plus, SlidersHorizontal } from 'lucide-react';
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Table } from 'antd';
 import { BankFile, specialFundUseByQuery, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
@@ -19,6 +19,36 @@ const STATUS_CHIP: Record<string, { cls: string; label: string }> = {
   needs_review: { cls: 'chip-warning', label: '待复核' },
   fixed: { cls: 'chip-success', label: '已修正' },
 };
+
+/** 对照模式可选的表头字段。默认只显示复核时最常用的四列。 */
+const COMPARE_COLUMNS = [
+  { key: 'watch', label: '关注' },
+  { key: 'date', label: '日期' },
+  { key: 'amount', label: '金额' },
+  { key: 'balance', label: '余额' },
+  { key: 'summary', label: '摘要' },
+  { key: 'counterparty', label: '对手方' },
+  { key: 'category', label: '分类' },
+  { key: 'holder', label: '开户主体' },
+  { key: 'bank', label: '银行 / 账户' },
+  { key: 'fundUse', label: '募投项目' },
+  { key: 'status', label: '状态' },
+] as const;
+const DEFAULT_COMPARE_COLUMNS = ['date', 'amount', 'balance', 'status'];
+const COMPARE_COLUMNS_KEY = 'flow.tx-compare-columns';
+
+function readCompareColumns(): string[] {
+  try {
+    const raw = localStorage.getItem(COMPARE_COLUMNS_KEY);
+    if (!raw) return [...DEFAULT_COMPARE_COLUMNS];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [...DEFAULT_COMPARE_COLUMNS];
+    const valid = COMPARE_COLUMNS.map((c) => c.key).filter((key) => parsed.includes(key));
+    return valid.length > 0 ? valid : [...DEFAULT_COMPARE_COLUMNS];
+  } catch {
+    return [...DEFAULT_COMPARE_COLUMNS];
+  }
+}
 
 type TxDraft = {
   date: string;
@@ -128,6 +158,9 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [bulkBusy, setBulkBusy] = useState(false);
   const [compareFile, setCompareFile] = useState<BankFile | null>(null);
   const [comparePick, setComparePick] = useState(false);
+  const [compareCols, setCompareCols] = useState<string[]>(readCompareColumns);
+  const [colsOpen, setColsOpen] = useState(false);
+  const colsMenuRef = useRef<HTMLDivElement>(null);
   const [split, setSplit] = useState(0.52);
   const splitDrag = useRef(false);
   const [taskFiles, setTaskFiles] = useState<BankFile[]>([]);
@@ -355,6 +388,21 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     setNotice(undefined);
   }
 
+  /** 切换对照表显示的列。至少保留一列，选择记在本地。 */
+  function toggleCompareCol(key: string) {
+    setCompareCols((cur) => {
+      const has = cur.includes(key);
+      if (has && cur.length <= 1) return cur;
+      const next = has ? cur.filter((k) => k !== key) : [...cur, key];
+      try {
+        localStorage.setItem(COMPARE_COLUMNS_KEY, JSON.stringify(next));
+      } catch {
+        /* 本地存储不可用时只影响下次打开，不影响当前显示 */
+      }
+      return next;
+    });
+  }
+
   /** 补一笔：日期和方向照抄当前行，金额、余额按 PDF 手填 */
   function startInsert(anchor: TxRow) {
     setInsertAfter(anchor);
@@ -565,6 +613,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     queryBeforeRef.current = query;
     setCompareFile(file);
     setComparePick(false);
+    setColsOpen(false);
     setPdfFit(0);
     setFocus(null);
     setSelectedIds([]);
@@ -600,6 +649,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     queryBeforeRef.current = null;
     setCompareFile(null);
     setComparePick(false);
+    setColsOpen(false);
     setPdfFit(0);
     setFocus(null);
     setSelectedIds([]);
@@ -694,7 +744,9 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     if (!compare) return undefined;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (insertAfter != null) {
+      if (colsOpen) {
+        setColsOpen(false);
+      } else if (insertAfter != null) {
         setInsertAfter(null);
         setInsertDraft(null);
       } else if (editingId != null) {
@@ -706,7 +758,16 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     return () => document.removeEventListener('keydown', onKey);
     // 只在进入对照时绑定。退出时读的是 ref 里保存的筛选。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compare, editingId, insertAfter]);
+  }, [compare, editingId, insertAfter, colsOpen]);
+
+  useEffect(() => {
+    if (!colsOpen) return undefined;
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (!colsMenuRef.current?.contains(e.target as Node)) setColsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [colsOpen]);
 
   useEffect(() => {
     const id = jumpToId.current;
@@ -873,6 +934,35 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             {localName ? ` · ${localName}` : ''}
           </span>
           <div className="tx-compare-bar-actions">
+            <div className="tx-compare-fields" ref={colsMenuRef}>
+              <button
+                type="button"
+                className="secondary-button"
+                aria-expanded={colsOpen}
+                title="选择对照表显示哪些字段"
+                onClick={() => setColsOpen((open) => !open)}
+              >
+                <SlidersHorizontal size={14} /> 字段
+              </button>
+              {colsOpen ? (
+                <div className="tx-compare-fields-menu" role="group" aria-label="显示字段">
+                  {COMPARE_COLUMNS.map((col) => {
+                    const checked = compareCols.includes(col.key);
+                    return (
+                      <label key={col.key}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={checked && compareCols.length <= 1}
+                          onChange={() => toggleCompareCol(col.key)}
+                        />
+                        {col.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               className="secondary-button"
@@ -1203,6 +1293,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           columns={([
             {
               title: '关注',
+              key: 'watch',
               width: 52,
               align: 'center',
               render: (_: unknown, r: TxRow) => (
@@ -1218,12 +1309,14 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '日期',
+              key: 'date',
               dataIndex: 'date',
               width: 96,
               render: (v: unknown) => <span className="tx-date">{typeof v === 'string' ? v : '—'}</span>,
             },
             {
               title: '金额',
+              key: 'amount',
               dataIndex: 'amount',
               width: 150,
               align: 'right',
@@ -1235,6 +1328,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '余额',
+              key: 'balance',
               dataIndex: 'balance',
               width: 118,
               align: 'right',
@@ -1242,12 +1336,14 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '摘要',
+              key: 'summary',
               dataIndex: 'summary',
               ellipsis: true,
               render: (v: unknown, r: TxRow) => <span title={r.rawText ?? (typeof v === 'string' ? v : undefined)}>{typeof v === 'string' ? v : '—'}</span>,
             },
             {
               title: '对手方',
+              key: 'counterparty',
               dataIndex: 'counterparty',
               width: 170,
               ellipsis: true,
@@ -1255,6 +1351,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '分类',
+              key: 'category',
               width: 140,
               ellipsis: true,
               render: (_: unknown, r: TxRow) =>
@@ -1271,6 +1368,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '开户主体',
+              key: 'holder',
               dataIndex: 'holder',
               width: 168,
               ellipsis: true,
@@ -1278,6 +1376,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '银行 / 账户',
+              key: 'bank',
               width: 160,
               ellipsis: true,
               render: (_: unknown, r: TxRow) =>
@@ -1291,6 +1390,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
             {
               title: '募投项目',
+              key: 'fundUse',
               dataIndex: 'fundUse',
               width: 140,
               ellipsis: true,
@@ -1318,8 +1418,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             },
           ] as { title?: unknown; key?: unknown }[]).filter((c) => {
             if (!compare) return true;
-            const id = String(c.key ?? c.title);
-            return id === '日期' || id === '金额' || id === '余额' || id === 'status';
+            return compareCols.includes(String(c.key ?? ''));
           }) as never}
         />
       </div>
