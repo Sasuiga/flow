@@ -1997,6 +1997,18 @@ button.tx-next-review.empty .tx-next-review-count {
   white-space: nowrap;
 }
 
+.tx-manual-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 4px;
+  border: 1px solid var(--ui-border);
+  border-radius: 3px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ui-muted);
+  white-space: nowrap;
+}
+
 .tx-amount {
   font-family: var(--ui-font-mono);
   font-size: 12px;

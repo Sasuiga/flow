@@ -1,4 +1,4 @@
-import { Bookmark, Columns2, FilterX, Inbox } from 'lucide-react';
+import { Bookmark, Columns2, FilterX, Inbox, Plus } from 'lucide-react';
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Table } from 'antd';
 import { BankFile, specialFundUseByQuery, TxOptions, TxPageResult, TxQuery, TxRow } from '@flow/shared';
@@ -33,8 +33,8 @@ type TxDraft = {
 };
 
 /** 流水印刷顺序。用来比较哪一条待复核离当前更近。 */
-function stmtKey(r: { page: number; lineNo: number; id: number }): number {
-  return r.page * 1_000_000_000 + r.lineNo * 1_000_000 + r.id;
+function stmtKey(r: { page: number; sortKey: number; id: number }): number {
+  return r.page * 1_000_000_000 + r.sortKey * 1_000_000 + r.id;
 }
 
 /** 把对照表里这一行滚到左栏可视区域的正中，方便直接读。 */
@@ -118,6 +118,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState<TxDraft | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  /** 补一笔时，新行插在这笔之后；表单关闭后清空 */
+  const [insertAfter, setInsertAfter] = useState<TxRow | null>(null);
+  const [insertDraft, setInsertDraft] = useState<TxDraft | null>(null);
+  const [insertBusy, setInsertBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkCat, setBulkCat] = useState('');
   const [bulkDate, setBulkDate] = useState('');
@@ -144,6 +148,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
   const fileInputRef = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
   const compare = compareFile != null;
+  /** 当前聚焦的行必须在本页表格里，补一笔才有明确的插入位置 */
+  const focusedRow = focus ? data?.rows.find((r) => r.id === focus.id) : undefined;
 
   useEffect(() => {
     if (query.taskId == null) {
@@ -347,6 +353,86 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     setDraft(draftOf(r));
     setError(undefined);
     setNotice(undefined);
+  }
+
+  /** 补一笔：日期和方向照抄当前行，金额、余额按 PDF 手填 */
+  function startInsert(anchor: TxRow) {
+    setInsertAfter(anchor);
+    setInsertDraft({
+      date: anchor.date ?? '',
+      direction: anchor.direction,
+      amount: '',
+      balance: '',
+      summary: '',
+      counterparty: '',
+      counterpartyAccount: '',
+      channel: '',
+      category: '',
+    });
+    setEditingId(null);
+    setDraft(null);
+    setError(undefined);
+    setNotice(undefined);
+  }
+
+  async function saveInsert() {
+    if (!insertDraft || !insertAfter || !compareFile || insertBusy) return;
+    const amount = Number(insertDraft.amount.replace(/,/g, ''));
+    const balance =
+      insertDraft.balance.trim() === '' ? null : Number(insertDraft.balance.replace(/,/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('金额需为大于 0 的数字，单位是元');
+      return;
+    }
+    if (balance != null && !Number.isFinite(balance)) {
+      setError('余额需为数字，或留空。单位是元');
+      return;
+    }
+    setInsertBusy(true);
+    setError(undefined);
+    try {
+      const res = await api.addTransaction(compareFile.id, {
+        afterId: insertAfter.id,
+        date: insertDraft.date,
+        summary: insertDraft.summary,
+        amount,
+        direction: insertDraft.direction,
+        balance,
+        counterparty: insertDraft.counterparty,
+        counterpartyAccount: insertDraft.counterpartyAccount,
+        channel: insertDraft.channel,
+        category: insertDraft.category.trim() ? insertDraft.category.trim() : null,
+      });
+      const other = (res.row.reviewNote ?? '')
+        .split('；')
+        .map((s) => s.trim())
+        .filter((s) => s && !s.startsWith('余额断裂'))
+        .join('；');
+      const balanceText = res.balance ? balanceRecalcText(res.balance) : '';
+      setNotice(
+        ['已补录一笔，记为「手工补录」，重读页面时会保留', balanceText, other ? `复核：${other}` : '']
+          .filter(Boolean)
+          .join('。'),
+      );
+      // 新行紧跟在锚点后面；锚点在当前页最后一行时，它会落到列表下一页
+      const rows = data?.rows ?? [];
+      const at = rows.findIndex((r) => r.id === insertAfter.id);
+      const pageSize = query.pageSize ?? 50;
+      if (at >= 0 && at === rows.length - 1 && rows.length >= pageSize) {
+        setQuery((q) => ({ ...q, page: (q.page ?? 1) + 1 }));
+      }
+      jumpToId.current = res.row.id;
+      setJumpSeq((n) => n + 1);
+      setPdfFit((n) => n + 1);
+      setFocus({ id: res.row.id, fileId: res.row.fileId, fileName: res.row.fileName, page: res.row.page || 1 });
+      setInsertAfter(null);
+      setInsertDraft(null);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setInsertBusy(false);
+    }
   }
 
   async function saveEdit(id: number) {
@@ -608,7 +694,10 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     if (!compare) return undefined;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (editingId != null) {
+      if (insertAfter != null) {
+        setInsertAfter(null);
+        setInsertDraft(null);
+      } else if (editingId != null) {
         setEditingId(null);
         setDraft(null);
       } else exitCompare();
@@ -617,7 +706,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     return () => document.removeEventListener('keydown', onKey);
     // 只在进入对照时绑定。退出时读的是 ref 里保存的筛选。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compare, editingId]);
+  }, [compare, editingId, insertAfter]);
 
   useEffect(() => {
     const id = jumpToId.current;
@@ -745,7 +834,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
       setNotice(
         !r.queued
           ? '该文件正在解析中'
-          : `用「${picked.name}」重读第 ${list} 页，读完只替换这些页，其它页保持原记录`,
+          : `用「${picked.name}」重读第 ${list} 页，读完只替换这些页的解析结果，手工补录的行和其它页保持原记录`,
       );
       if (!r.queued) return;
       const fileId = compareFile.id;
@@ -758,7 +847,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           const again = await api.filePages(fileId).catch(() => null);
           if (again) setPageGaps(again.gaps);
           if (pages[0]) await focusPdfPage(fileId, pages[0]).catch(() => undefined);
-          setNotice(file?.error ? file.error : `第 ${list} 页已补进原记录`);
+          setNotice(file?.error ? file.error : `第 ${list} 页已补进原记录，手工补录的行已保留`);
           return;
         }
       }
@@ -784,6 +873,19 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             {localName ? ` · ${localName}` : ''}
           </span>
           <div className="tx-compare-bar-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!focusedRow || insertBusy}
+              title={
+                focusedRow
+                  ? `在第 ${focusedRow.page} 页这一笔后面补一笔，按印刷位置插入`
+                  : '先在左侧点一行，补录的行会插在它后面'
+              }
+              onClick={() => focusedRow && startInsert(focusedRow)}
+            >
+              <Plus size={14} /> 补一笔
+            </button>
             <button
               type="button"
               className="secondary-button"
@@ -1197,13 +1299,20 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
             {
               title: '状态',
               key: 'status',
-              width: 112,
+              width: 124,
               render: (_: unknown, r: TxRow) => {
                 const chip = STATUS_CHIP[r.status] ?? { cls: 'chip-muted', label: r.status };
                 return (
-                  <span className={`chip tx-status ${chip.cls}`} title={r.reviewNote || chip.label}>
-                    {chip.label}
-                  </span>
+                  <>
+                    <span className={`chip tx-status ${chip.cls}`} title={r.reviewNote || chip.label}>
+                      {chip.label}
+                    </span>
+                    {r.source === 'manual' ? (
+                      <span className="tx-manual-tag" title="手工补录，重读页面时会保留">
+                        补录
+                      </span>
+                    ) : null}
+                  </>
                 );
               },
             },
@@ -1276,6 +1385,22 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           onCancel={() => {
             setEditingId(null);
             setDraft(null);
+            setError(undefined);
+          }}
+        />
+      ) : null}
+      {compare && insertDraft && insertAfter ? (
+        <CompareEdit
+          title={`补一笔（插在第 ${insertAfter.page} 页这笔之后）`}
+          draft={insertDraft}
+          categories={catSet}
+          busy={insertBusy}
+          error={error}
+          onChange={setInsertDraft}
+          onSave={() => void saveInsert()}
+          onCancel={() => {
+            setInsertAfter(null);
+            setInsertDraft(null);
             setError(undefined);
           }}
         />
@@ -1363,6 +1488,7 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
 
 /** 对照模式里改这笔交易。只盖住左半边，右边的 PDF 仍可对照。 */
 function CompareEdit({
+  title = '修改交易',
   draft,
   categories,
   busy,
@@ -1371,6 +1497,7 @@ function CompareEdit({
   onSave,
   onCancel,
 }: {
+  title?: string;
   draft: TxDraft;
   categories: string[];
   busy: boolean;
@@ -1387,8 +1514,8 @@ function CompareEdit({
         if (e.target === e.currentTarget && !busy) onCancel();
       }}
     >
-      <div className="tx-compare-edit" role="dialog" aria-label="修改交易">
-        <h3>修改交易</h3>
+      <div className="tx-compare-edit" role="dialog" aria-label={title}>
+        <h3>{title}</h3>
         {error ? <div className="flow-error">{error}</div> : null}
         <div className="tx-compare-edit-grid">
           <span>日期</span>
@@ -1438,6 +1565,7 @@ function TxRawRow({ r }: { r: TxRow }) {
       <div className="tx-detail-meta">
         <span>
           {r.fileName} · 第 {r.page} 页 · 行 {r.lineNo}
+          {r.source === 'manual' ? ' · 手工补录' : ''}
         </span>
         {r.channel ? <span>渠道：{r.channel}</span> : null}
         {r.counterpartyAccount ? <span>对方账号：{r.counterpartyAccount}</span> : null}

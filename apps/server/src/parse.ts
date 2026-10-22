@@ -427,7 +427,7 @@ export function recomputeFileBalanceReviews(fileId: number, editedId?: number): 
   const rows = db
     .prepare(
       `SELECT id, page, line_no, amount, direction, balance, review_note, status
-       FROM transactions WHERE file_id = ? ORDER BY page, line_no, id`,
+       FROM transactions WHERE file_id = ? ORDER BY page, COALESCE(sort_key, line_no), id`,
     )
     .all(fileId) as Array<{
     id: number;
@@ -900,7 +900,7 @@ function tailBeforePage(fileId: number, page: number): string | undefined {
     .prepare(
       `SELECT date, direction, amount, raw_text FROM transactions
        WHERE file_id = ? AND page > 0 AND page < ?
-       ORDER BY page DESC, line_no DESC, id DESC LIMIT 2`,
+       ORDER BY page DESC, COALESCE(sort_key, line_no) DESC, id DESC LIMIT 2`,
     )
     .all(fileId, page) as Array<{ date: string | null; direction: string; amount: number; raw_text: string | null }>;
   rows.reverse();
@@ -914,28 +914,87 @@ function lastBalanceBeforePage(fileId: number, page: number): number | undefined
     .prepare(
       `SELECT balance FROM transactions
        WHERE file_id = ? AND page > 0 AND page < ? AND balance IS NOT NULL
-       ORDER BY page DESC, line_no DESC, id DESC LIMIT 1`,
+       ORDER BY page DESC, COALESCE(sort_key, line_no) DESC, id DESC LIMIT 1`,
     )
     .get(fileId, page) as { balance: number } | undefined;
   return row ? Number(row.balance) : undefined;
 }
 
-/** 只删掉这些页的交易再写入新结果（含空结果）。其它页不动。关注、规则命中随这些行一起去掉。 */
-function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { insertedIds: number[] } {
+/** 重读时用来认出手工补录过的同一笔：日期 + 方向 + 金额 + 余额。 */
+function manualSignature(r: {
+  date: string | null;
+  direction: string;
+  amount: number;
+  balance: number | null;
+}): string {
+  return [
+    (r.date ?? '').trim(),
+    r.direction,
+    Number(r.amount).toFixed(2),
+    r.balance == null ? '' : Number(r.balance).toFixed(2),
+  ].join('|');
+}
+
+function manualRows(fileId: number, pages?: number[]): Array<{
+  date: string | null;
+  direction: string;
+  amount: number;
+  balance: number | null;
+}> {
+  if (pages != null && pages.length === 0) return [];
+  const placeholders = pages?.map(() => '?').join(',');
+  return db
+    .prepare(
+      `SELECT date, direction, amount, balance FROM transactions
+       WHERE file_id = ? AND source = 'manual'${placeholders ? ` AND page IN (${placeholders})` : ''}`,
+    )
+    .all(fileId, ...(pages ?? [])) as Array<{
+    date: string | null;
+    direction: string;
+    amount: number;
+    balance: number | null;
+  }>;
+}
+
+/**
+ * 只删掉这些页「解析得到」的交易再写入新结果（含空结果）。其它页不动。
+ * 手工补录的行保留；如果重读结果里又出现了同一笔，按指纹跳过，避免重复。
+ */
+export function replaceFilePages(
+  fileId: number,
+  pages: number[],
+  txs: NormTx[],
+): { insertedIds: number[]; preservedManual: number; skippedManualDup: number } {
   const placeholders = pages.map(() => '?').join(',');
   const tx = db.transaction(() => {
+    const manual = manualRows(fileId, pages);
+    const manualKeys = new Set(manual.map(manualSignature));
     db.prepare(
-      `DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ? AND page IN (${placeholders}))`,
+      `DELETE FROM rule_hits WHERE transaction_id IN (
+         SELECT id FROM transactions WHERE file_id = ? AND page IN (${placeholders}) AND source != 'manual'
+       )`,
     ).run(fileId, ...pages);
-    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders})`).run(fileId, ...pages);
+    db.prepare(
+      `DELETE FROM transactions WHERE file_id = ? AND page IN (${placeholders}) AND source != 'manual'`,
+    ).run(fileId, ...pages);
     const ins = db.prepare(
       `INSERT INTO transactions(file_id, page, line_no, date, summary, amount, direction, balance,
         counterparty, counterparty_account, channel, confidence, review_note, raw_text, status)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
     const insertedIds: number[] = [];
+    let skippedManualDup = 0;
     const inOrder = [...txs].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
     for (const t of inOrder) {
+      if (manualKeys.has(manualSignature({
+        date: t.date ?? null,
+        direction: t.direction,
+        amount: t.amount,
+        balance: t.balance ?? null,
+      }))) {
+        skippedManualDup++;
+        continue;
+      }
       const raw = t.raw?.trim();
       const status = t.review ? 'needs_review' : 'ok';
       const info = ins.run(
@@ -957,9 +1016,9 @@ function replaceFilePages(fileId: number, pages: number[], txs: NormTx[]): { ins
       );
       insertedIds.push(Number(info.lastInsertRowid));
     }
-    return insertedIds;
+    return { insertedIds, preservedManual: manual.length, skippedManualDup };
   });
-  return { insertedIds: tx() };
+  return tx();
 }
 
 export async function filePageMap(fileId: number): Promise<
@@ -1214,10 +1273,14 @@ export async function parseFileTextLayer(
     const reviewCount = recomputeFileBalanceReviews(fileId).reviewCount;
     prog.set('balance', 'done', reviewCount > 0 ? `整份里 ${reviewCount} 笔待复核` : '余额连续');
     const txCount = Number((db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n);
+    const keptNote =
+      replaced.preservedManual > 0 ? `，保留手工补录 ${replaced.preservedManual} 笔` : '';
+    const dupNote =
+      replaced.skippedManualDup > 0 ? `，重读结果里与手工补录重复的 ${replaced.skippedManualDup} 笔已跳过` : '';
     const saveDetail =
       emptyPages.length > 0
-        ? `第 ${emptyPages.join('、')} 页按空结果覆盖；第 ${wanted.join('、')} 页已写回，这份现有 ${txCount} 笔`
-        : `第 ${wanted.join('、')} 页已补进原记录，这份现有 ${txCount} 笔`;
+        ? `第 ${emptyPages.join('、')} 页按空结果覆盖${keptNote}${dupNote}；第 ${wanted.join('、')} 页已写回，这份现有 ${txCount} 笔`
+        : `第 ${wanted.join('、')} 页已补进原记录${keptNote}${dupNote}，这份现有 ${txCount} 笔`;
     const patch: Record<string, unknown> = {
       tx_count: txCount,
       error: null,
@@ -1279,20 +1342,35 @@ export async function parseFileTextLayer(
   // 4) 入库（重解析先清旧数据）+ 质检标记。暂停停在写入前，终止则这一份不入库。
   await hold('save', '已暂停，继续后写入交易');
   prog.set('save', 'run', `写入 ${all.length} 笔`);
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM rule_hits WHERE transaction_id IN (SELECT id FROM transactions WHERE file_id = ?)').run(fileId);
-    db.prepare('DELETE FROM transactions WHERE file_id = ?').run(fileId);
+  const saveKeep = db.transaction(() => {
+    const manual = manualRows(fileId);
+    const manualKeys = new Set(manual.map(manualSignature));
+    // 手工补录的行不能因为重解析静默消失；只换掉解析得到的行
+    db.prepare(
+      `DELETE FROM rule_hits WHERE transaction_id IN (
+         SELECT id FROM transactions WHERE file_id = ? AND source != 'manual'
+       )`,
+    ).run(fileId);
+    db.prepare(`DELETE FROM transactions WHERE file_id = ? AND source != 'manual'`).run(fileId);
     const ins = db.prepare(
       `INSERT INTO transactions(file_id, page, line_no, date, summary, amount, direction, balance,
         counterparty, counterparty_account, channel, confidence, review_note, raw_text, status)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     );
-    let reviewCount = 0;
+    let skippedManualDup = 0;
     const inOrder = [...all].sort((a, b) => a.page - b.page || a.lineNo - b.lineNo);
     for (const t of inOrder) {
+      if (manualKeys.has(manualSignature({
+        date: t.date ?? null,
+        direction: t.direction,
+        amount: t.amount,
+        balance: t.balance ?? null,
+      }))) {
+        skippedManualDup++;
+        continue;
+      }
       const raw = t.raw?.trim();
       const status = t.review ? 'needs_review' : 'ok';
-      if (t.review) reviewCount++;
       ins.run(
         fileId,
         t.page,
@@ -1311,12 +1389,18 @@ export async function parseFileTextLayer(
         status,
       );
     }
-    return reviewCount;
-  });
-  const reviewCount = tx();
+    return { preservedManual: manual.length, skippedManualDup };
+  })();
+  const txCount = Number(
+    (db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n,
+  );
+  // 保留的手工行可能插在解析行之间，按整份实际顺序再核一次余额
+  const reviewCount = recomputeFileBalanceReviews(fileId).reviewCount;
+  const keptNote = saveKeep.preservedManual > 0 ? `，保留手工补录 ${saveKeep.preservedManual} 笔` : '';
+  const dupNote = saveKeep.skippedManualDup > 0 ? `，跳过与手工补录重复的 ${saveKeep.skippedManualDup} 笔` : '';
 
   // 5) 文件元数据回写（不覆盖已填）
-  const patch: Record<string, unknown> = { tx_count: all.length, error: null, checkpoint: null };
+  const patch: Record<string, unknown> = { tx_count: txCount, error: null, checkpoint: null };
   if (!file.bank && meta.bank) patch.bank = meta.bank;
   if (!file.account_no && meta.accountNo) patch.account_no = meta.accountNo;
   if (!file.account_name && meta.accountName) patch.account_name = meta.accountName;
@@ -1324,7 +1408,11 @@ export async function parseFileTextLayer(
   if (!file.period_end && meta.periodEnd) patch.period_end = meta.periodEnd;
   patch.status = reviewCount > 0 ? 'needs_review' : 'done';
   patch.progress = null;
-  prog.set('save', 'done', reviewCount > 0 ? `${all.length} 笔，其中 ${reviewCount} 笔待复核` : `${all.length} 笔`);
+  prog.set(
+    'save',
+    'done',
+    reviewCount > 0 ? `${txCount} 笔${keptNote}${dupNote}，其中 ${reviewCount} 笔待复核` : `${txCount} 笔${keptNote}${dupNote}`,
+  );
   setFile(fileId, patch);
 
   // 6) M4：解析完自动 LLM 批量分类（只分本文件未分类的交易；人工改判过的不动）
@@ -1352,7 +1440,7 @@ export async function parseFileTextLayer(
       if (isStopped(e)) {
         prog.set('categorize', 'skip', '已终止');
         setFile(fileId, { progress: null, error: null });
-        return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount: all.length, reviewCount };
+        return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
       }
       // 解析本身已成功，分类失败只留提示，任务页可点「LLM 分类」重试
       prog.set('categorize', 'fail', (e as Error).message);
@@ -1362,7 +1450,7 @@ export async function parseFileTextLayer(
     prog.set('categorize', 'skip', all.length > 0 ? '自动分类已关闭' : '无交易');
   }
   setFile(fileId, { progress: null });
-  return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount: all.length, reviewCount };
+  return { fileId, status: reviewCount > 0 ? 'needs_review' : 'done', txCount, reviewCount };
 }
 
 /** 指定页没读成：原记录留着，不把整份打成错误。 */

@@ -177,6 +177,27 @@ export const api = {
   /** 把这份流水归到某个已登记募资专户。只改文件上的银行、账号、户名 */
   assignFileAccount: (id: number, body: { bank: string; accountNo: string; accountName: string }) =>
     j<{ ok: boolean }>(`/api/files/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  /** 在某一笔后面人工补一行。按印刷位置插入，保存后整份重算余额 */
+  addTransaction: (
+    fileId: number,
+    body: {
+      afterId: number;
+      date: string;
+      summary: string;
+      amount: number;
+      direction: 'in' | 'out';
+      balance: number | null;
+      counterparty: string;
+      counterpartyAccount: string;
+      channel: string;
+      category: string | null;
+    },
+  ) =>
+    j<{
+      row: TxRow;
+      reviewCount: number;
+      balance: { selfGap: string | null; nextGap: string | null; hasNext: boolean };
+    }>(`/api/files/${fileId}/transactions`, { method: 'POST', body: JSON.stringify(body) }),
   listTransactions: (q: TxQuery) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v));

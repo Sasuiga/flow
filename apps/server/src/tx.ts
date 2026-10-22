@@ -3,6 +3,7 @@
  *  GET /api/transactions          跨任务交易表（过滤/排序/分页 + 聚合）
  *  GET /api/transactions/options  过滤器选项（任务/银行/账户/分类）
  *  POST /api/files/:id/parse     单文件解析/重解析（入队）
+ *  POST /api/files/:id/transactions 人工补一笔（按印刷位置插入）
  *  POST /api/files/:id/refresh   任务级重扫+解析（chokidar 之外的手动通道）
  *  DELETE /api/files/:id         删除文件登记（含其交易；磁盘 PDF 不动）
  */
@@ -47,6 +48,8 @@ export function toTxRow(r: Record<string, unknown>): TxRow {
     fundUse: (r.fund_use_name as string | null) || undefined,
     page: Number(r.page),
     lineNo: Number(r.line_no),
+    sortKey: Number(r.sort_key ?? r.line_no),
+    source: r.source === 'manual' ? 'manual' : 'parsed',
     date: (r.date as string | null) ?? undefined,
     summary: (r.summary as string | null) ?? undefined,
     amount: Number(r.amount),
@@ -85,7 +88,8 @@ const FUND_USE_NAME_SQL = fundUseNameCaseSql();
 const UNASSIGNED_FUND_USE_SQL = `fu.id IS NULL AND NOT (${specialFundUseRoleInSql("IFNULL(fua.use_role, '')")})`;
 
 export const BASE_SELECT = `
-SELECT t.id, t.file_id, t.page, t.line_no, t.date, t.summary, t.amount, t.direction, t.balance,
+SELECT t.id, t.file_id, t.page, t.line_no, COALESCE(t.sort_key, t.line_no) AS sort_key, t.source,
+       t.date, t.summary, t.amount, t.direction, t.balance,
        t.counterparty, t.counterparty_account, t.channel, t.category, t.category_src,
        t.risk_flags, t.confidence, t.review_note, t.raw_text, t.status,
        COALESCE(w.marked, 0) AS watched,
@@ -107,7 +111,7 @@ transactionsRouter.get('/review', (req, res) => {
     args.push(taskId);
   }
   const rows = db
-    .prepare(`${BASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY f.rel_path, t.page, t.line_no, t.id LIMIT 1000`)
+    .prepare(`${BASE_SELECT} WHERE ${where.join(' AND ')} ORDER BY f.rel_path, t.page, COALESCE(t.sort_key, t.line_no), t.id LIMIT 1000`)
     .all(...args) as Record<string, unknown>[];
   res.json({ rows: rows.map(toTxRow), total: rows.length });
 });
@@ -293,12 +297,12 @@ transactionsRouter.get('/', (req, res) => {
   const { whereSql, args } = buildWhere(q);
   const sort =
     q.sort === 'date_asc'
-      ? 'ORDER BY t.date IS NULL, t.date ASC, f.rel_path, t.page, t.line_no, t.id'
+      ? 'ORDER BY t.date IS NULL, t.date ASC, f.rel_path, t.page, COALESCE(t.sort_key, t.line_no), t.id'
       : q.sort === 'date_desc'
-        ? 'ORDER BY t.date IS NULL, t.date DESC, f.rel_path, t.page, t.line_no, t.id'
+        ? 'ORDER BY t.date IS NULL, t.date DESC, f.rel_path, t.page, COALESCE(t.sort_key, t.line_no), t.id'
         : q.sort === 'amount_desc'
-          ? 'ORDER BY t.amount DESC, f.rel_path, t.page, t.line_no, t.id'
-          : 'ORDER BY f.rel_path, t.page, t.line_no, t.id';
+          ? 'ORDER BY t.amount DESC, f.rel_path, t.page, COALESCE(t.sort_key, t.line_no), t.id'
+          : 'ORDER BY f.rel_path, t.page, COALESCE(t.sort_key, t.line_no), t.id';
   const page = Math.max(1, Number(q.page) || 1);
   const pageSize = Math.min(200, Math.max(10, Number(q.pageSize) || 50));
 
@@ -503,6 +507,139 @@ filesRouter.get('/:id/pages', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
   }
+});
+
+/**
+ * 人工在某一笔后面补一行。插在同一页、同一印刷位置，
+ * 保存后按整份流水重算余额，并把这一行标成「手工补录」。
+ */
+filesRouter.post('/:id/transactions', (req, res) => {
+  const fileId = Number(req.params.id);
+  const file = db.prepare('SELECT id FROM files WHERE id = ?').get(fileId) as { id: number } | undefined;
+  if (!file) return res.status(404).json({ error: '流水文件不存在' });
+  const b = (req.body ?? {}) as {
+    afterId?: number | null;
+    date?: string | null;
+    summary?: string | null;
+    amount?: number;
+    direction?: string;
+    balance?: number | null;
+    counterparty?: string | null;
+    counterpartyAccount?: string | null;
+    channel?: string | null;
+    category?: string | null;
+  };
+  if (b.direction !== 'in' && b.direction !== 'out') return res.status(400).json({ error: '方向只能是收入或支出' });
+  const amount = Number(b.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: '金额需为大于 0 的数字' });
+  const balance =
+    b.balance == null || (typeof b.balance === 'string' && (b.balance as string) === '')
+      ? null
+      : Number(b.balance);
+  if (balance != null && !Number.isFinite(balance)) return res.status(400).json({ error: '余额需为数字' });
+
+  const afterId = b.afterId == null ? null : Number(b.afterId);
+  const after =
+    afterId != null
+      ? (db
+          .prepare(
+            `SELECT id, page, line_no, COALESCE(sort_key, line_no) AS sort_key
+             FROM transactions WHERE id = ? AND file_id = ?`,
+          )
+          .get(afterId, fileId) as
+          | { id: number; page: number; line_no: number; sort_key: number }
+          | undefined)
+      : undefined;
+  if (afterId != null && !after) return res.status(400).json({ error: '插入位置不属于这份流水' });
+
+  let page: number;
+  let lineNo: number;
+  let sortKey: number;
+  if (after) {
+    page = Number(after.page);
+    lineNo = Number(after.line_no);
+    const anchorKey = Number(after.sort_key);
+    const next = db
+      .prepare(
+        `SELECT COALESCE(sort_key, line_no) AS k FROM transactions
+         WHERE file_id = ? AND page = ?
+           AND (COALESCE(sort_key, line_no) > ? OR (COALESCE(sort_key, line_no) = ? AND id > ?))
+         ORDER BY k ASC, id ASC LIMIT 1`,
+      )
+      .get(fileId, page, anchorKey, anchorKey, after.id) as { k: number } | undefined;
+    const nextKey = next == null ? null : Number(next.k);
+    sortKey = nextKey != null && nextKey - anchorKey > 0.002 ? (anchorKey + nextKey) / 2 : anchorKey + 0.5;
+  } else {
+    const last = db
+      .prepare(
+        `SELECT page, line_no, COALESCE(sort_key, line_no) AS k FROM transactions
+         WHERE file_id = ? ORDER BY page DESC, k DESC, id DESC LIMIT 1`,
+      )
+      .get(fileId) as { page: number; line_no: number; k: number } | undefined;
+    page = last ? Number(last.page) : 1;
+    lineNo = last ? Number(last.line_no) : 0;
+    sortKey = (last ? Number(last.k) : 0) + 0.5;
+  }
+
+  const dateRaw = typeof b.date === 'string' ? b.date.trim() : '';
+  const date = dateRaw ? (normalizeBankDate(dateRaw) ?? dateRaw) : null;
+  const review: string[] = [];
+  if (!dateRaw) review.push('日期缺失');
+  else if (!normalizeBankDate(dateRaw)) review.push(`日期格式异常(${dateRaw})`);
+  const summary = typeof b.summary === 'string' && b.summary.trim() ? b.summary.trim() : null;
+  const counterparty = typeof b.counterparty === 'string' && b.counterparty.trim() ? b.counterparty.trim() : null;
+  const counterpartyAccount =
+    typeof b.counterpartyAccount === 'string' && b.counterpartyAccount.trim()
+      ? b.counterpartyAccount.trim()
+      : null;
+  const channel = typeof b.channel === 'string' && b.channel.trim() ? b.channel.trim() : null;
+  const category = typeof b.category === 'string' && b.category.trim() ? b.category.trim() : null;
+  const note = review.join('；') || null;
+
+  const info = db
+    .prepare(
+      `INSERT INTO transactions(file_id, page, line_no, sort_key, date, summary, amount, direction, balance,
+        counterparty, counterparty_account, channel, category, category_src, confidence, review_note,
+        raw_text, status, source)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      fileId,
+      page,
+      lineNo,
+      sortKey,
+      date,
+      summary,
+      Math.round(amount * 100) / 100,
+      b.direction,
+      balance == null ? null : Math.round(balance * 100) / 100,
+      counterparty,
+      counterpartyAccount,
+      channel,
+      category,
+      category ? 'manual' : null,
+      1,
+      note,
+      '手工补录',
+      note ? 'needs_review' : 'fixed',
+      'manual',
+    );
+  const id = Number(info.lastInsertRowid);
+  const balanceInfo = recomputeFileBalanceReviews(fileId, id);
+  const txCount = Number(
+    (db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE file_id = ?').get(fileId) as { n: number }).n,
+  );
+  db.prepare('UPDATE files SET tx_count = ?, updated_at = ? WHERE id = ?').run(
+    txCount,
+    new Date().toISOString(),
+    fileId,
+  );
+  const updated = db.prepare(`${BASE_SELECT} WHERE t.id = ?`).get(id) as Record<string, unknown>;
+  res.json({
+    row: toTxRow(updated),
+    reviewCount: balanceInfo.reviewCount,
+    balance: { selfGap: balanceInfo.selfGap, nextGap: balanceInfo.nextGap, hasNext: balanceInfo.hasNext },
+  });
 });
 
 /** 单文件解析/重解析（入队；状态置 parsing 由队列负责）。pages 只重读这些页并替换进原记录。 */

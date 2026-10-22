@@ -247,6 +247,10 @@ export interface TxRow {
   fundUse?: string;
   page: number;
   lineNo: number;
+  /** 印刷顺序的排序键。手工补录的行落在相邻两笔之间时是小数 */
+  sortKey: number;
+  /** parsed=解析得到，manual=人工补录 */
+  source: 'parsed' | 'manual';
   date?: string;
   summary?: string;
   amount: number;

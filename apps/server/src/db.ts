@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS transactions (
   confidence REAL NOT NULL DEFAULT 1,
   review_note TEXT,
   raw_text TEXT,
-  status TEXT NOT NULL DEFAULT 'ok'
+  status TEXT NOT NULL DEFAULT 'ok',
+  -- parsed=解析得到，manual=人工补录；重读页面时手工行要保留
+  source TEXT NOT NULL DEFAULT 'parsed',
+  -- 同页印刷顺序。手工补录插在相邻两笔之间时用小数，不挤占 line_no
+  sort_key REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tx_file ON transactions(file_id);
 CREATE INDEX IF NOT EXISTS idx_tx_counterparty ON transactions(counterparty);
@@ -188,6 +192,12 @@ if (!tableCols('tx_watch').includes('memo')) {
 }
 if (!tableCols('transactions').includes('review_note')) {
   db.exec('ALTER TABLE transactions ADD COLUMN review_note TEXT');
+}
+if (!tableCols('transactions').includes('source')) {
+  db.exec("ALTER TABLE transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'parsed'");
+}
+if (!tableCols('transactions').includes('sort_key')) {
+  db.exec('ALTER TABLE transactions ADD COLUMN sort_key REAL');
 }
 if (!tableCols('files').includes('progress')) {
   db.exec('ALTER TABLE files ADD COLUMN progress TEXT');

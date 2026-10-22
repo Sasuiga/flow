@@ -219,7 +219,7 @@ function PickPagesView({
         </label>
         {replacing.length > 0 ? (
           <p className="page-gap-warn">
-            第 {replacing.join('、')} 页已有交易，会被换掉，含这些页上的人工修改和关注。
+            第 {replacing.join('、')} 页已有交易，会被换掉，含这些页上的人工修改和关注；手工补录的行会保留。
           </p>
         ) : null}
         {err ? <p className="page-gap-warn">{err}</p> : null}
