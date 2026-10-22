@@ -417,6 +417,64 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
     }
   }
 
+  /** 已选定账户时，直接找到这个账户的 PDF；同一账户有多期流水就打开最近一期。 */
+  function accountCompareFile(
+    files: BankFile[],
+    accountNo: string,
+    bank: string | undefined,
+    focusedFileId: number | undefined,
+    rowFileId: number | undefined,
+  ): BankFile | undefined {
+    const sameAccount = files.filter((f) => (f.accountNo ?? '').trim() === accountNo);
+    if (sameAccount.length === 0) return undefined;
+    const sameBank = bank ? sameAccount.filter((f) => f.bank === bank) : [];
+    const cands = sameBank.length > 0 ? sameBank : sameAccount;
+    if (cands.length === 1) return cands[0];
+    const focused = cands.find((f) => f.id === focusedFileId) ?? cands.find((f) => f.id === rowFileId);
+    if (focused) return focused;
+    // 同一账户有多期流水：默认打开最近一期，另一期仍可从「切换」进入。
+    return [...cands].sort(
+      (a, b) => (b.periodEnd ?? '').localeCompare(a.periodEnd ?? '') || b.id - a.id,
+    )[0];
+  }
+
+  /** 对照按钮：选了账户就直接开这个账户的 PDF；没选账户才让用户挑。 */
+  async function startCompare() {
+    if (taskId == null) return;
+    const accountNo = query.accountNo?.trim();
+    if (!accountNo) {
+      await openCompare();
+      return;
+    }
+    setFilesBusy(true);
+    setError(undefined);
+    try {
+      const detail = await api.getTask(taskId);
+      const files = detail.files.filter((f) => f.relPath.toLowerCase().endsWith('.pdf'));
+      setTaskFiles(files);
+      const rowFileIds = new Set((data?.rows ?? []).map((r) => r.fileId));
+      const target = accountCompareFile(
+        files,
+        accountNo,
+        query.bank,
+        focus?.fileId,
+        rowFileIds.size === 1 ? [...rowFileIds][0] : undefined,
+      );
+      if (target) {
+        enterCompare(target);
+        return;
+      }
+      // 账户选着但找不到对应 PDF（比如还没登记文件），退回手动选。
+      setComparePick(true);
+    } catch (e) {
+      setTaskFiles([]);
+      setError((e as Error).message);
+      setComparePick(true);
+    } finally {
+      setFilesBusy(false);
+    }
+  }
+
   function enterCompare(file: BankFile) {
     queryBeforeRef.current = query;
     setCompareFile(file);
@@ -765,8 +823,8 @@ export function TransactionsPage({ taskId, initialBank, initialAccountNo }: TxPa
           <button
             type="button"
             className="secondary-button"
-            disabled={taskId == null}
-            onClick={() => void openCompare()}
+            disabled={taskId == null || filesBusy}
+            onClick={() => void startCompare()}
           >
             <Columns2 size={14} /> 对照
           </button>
